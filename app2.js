@@ -153,6 +153,14 @@ function phoneDisplay(ph){
   // Shows number cleanly — ext and opt on same line
   return ph; // already formatted as XXX.XXX.XXXX ext/opt X
 }
+function phoneBase(ph){
+  const m=String(ph).match(/(\d{3}\.\d{3}\.\d{4})/);
+  return m?m[1]:ph;
+}
+function phoneSuffix(ph){
+  const m=String(ph).match(/\d{3}\.\d{3}\.\d{4}(.*)/);
+  return m?m[1].trim():'';
+}
 function phoneDigits(ph){
   // Extract just the 10 digits for matching
   const m=String(ph).match(/(\d{3})\.(\d{3})\.(\d{4})/);
