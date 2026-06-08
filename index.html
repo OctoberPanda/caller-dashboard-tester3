@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Caller Dashboard — Tester</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- SETUP -->
+<div id="setup-screen" class="screen">
+  <div class="setup-card">
+    <div class="setup-logo">📞</div>
+    <h1>Caller Dashboard <span class="tester-tag">TESTER</span></h1>
+    <p class="setup-sub">Connect your sheets to get started</p>
+    <div class="form-group"><label>Your name</label><input type="text" id="s-name" placeholder="e.g. Leon Godwin"/></div>
+    <div class="form-group"><label>Main sheet ID</label><input type="text" id="s-sheet-id" placeholder="Paste Sheet ID"/><span class="hint">Between /d/ and /edit in the URL</span></div>
+    <div class="form-group"><label>Your tab name</label><input type="text" id="s-tab" placeholder="e.g. Leon Outreach Tracker"/></div>
+    <div class="form-group"><label>Contact update sheet ID</label><input type="text" id="s-update-id" placeholder="Paste Contact Update Sheet ID"/></div>
+    <div class="form-group"><label>Contact update tab name</label><input type="text" id="s-update-tab" placeholder="e.g. LEONS CONTACT UPDATE"/></div>
+    <div class="form-group"><label>Google API Key</label><input type="text" id="s-api-key" placeholder="Paste your API key"/></div>
+    <button class="btn-primary" onclick="saveSetup()">Connect</button>
+    <p class="setup-note">Settings saved in your browser only.</p>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="main-app" class="screen hidden">
+
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <span class="app-name">📞 Caller Dashboard</span>
+      <span class="tester-badge">TESTER</span>
+      <div class="date-wrap">
+        <span class="date-label">Date</span>
+        <input type="text" id="work-date" placeholder="M/D/YYYY" onchange="onDateChange()"/>
+      </div>
+      <span class="rep-badge" id="rep-badge"></span>
+    </div>
+    <div class="topbar-right">
+      <button class="btn-sm" onclick="clearDayLogs()">🗑 Clear day</button>
+      <button class="btn-sm" onclick="loadSheet()">↻ Refresh</button>
+      <button class="btn-eod" onclick="showEOD()">End of day report</button>
+      <button class="btn-icon" onclick="showSettings()">⚙️</button>
+    </div>
+  </div>
+
+  <!-- STATS BAR -->
+  <div class="stats-bar">
+    <div class="stat"><span class="stat-val" id="st-dials">0</span><span class="stat-lbl">Dials</span></div>
+    <div class="stat"><span class="stat-val green" id="st-reached">0</span><span class="stat-lbl">Banks reached</span></div>
+    <div class="stat"><span class="stat-val blue" id="st-people">0</span><span class="stat-lbl">People reached</span></div>
+    <div class="stat"><span class="stat-val amber" id="st-complete">0</span><span class="stat-lbl">Complete</span></div>
+    <div class="stat"><span class="stat-val green" id="st-appt">0</span><span class="stat-lbl">Appointments</span></div>
+    <div class="stat"><span class="stat-val red" id="st-sos">0</span><span class="stat-lbl">SOS</span></div>
+    <div class="stat"><span class="stat-val red" id="st-declined">0</span><span class="stat-lbl">Declined</span></div>
+    <div class="stat"><span class="stat-val" id="st-total">0</span><span class="stat-lbl">Active</span></div>
+  </div>
+
+  <!-- NAV BAR -->
+  <div class="nav-bar">
+    <button class="nav-btn" id="btn-prev" onclick="prevBank()">← Prev</button>
+    <div class="nav-center">
+      <span class="nav-counter" id="nav-counter">Bank 1 of 137</span>
+      <div class="nav-filter-wrap">
+        <input type="text" id="search" placeholder="Search bank..." oninput="onSearch()"/>
+        <select id="f-status" onchange="onFilter()">
+          <option value="">All banks</option>
+          <option value="called-today">Called today</option>
+          <option value="not-called-today">Not called today</option>
+          <option value="incomplete">Incomplete</option>
+          <option value="complete">Complete</option>
+          <option value="sos">SOS flagged</option>
+          <option value="interest">Expressed interest</option>
+          <option value="declined-today">Declined today</option>
+          <option value="appt-held">Appointment held</option>
+          <option value="attention">Needs attention</option>
+        </select>
+      </div>
+    </div>
+    <button class="nav-btn" id="btn-next" onclick="nextBank()">Next →</button>
+  </div>
+
+  <!-- BANK VIEW -->
+  <div id="bank-view" class="bank-view">
+    <div class="loading" id="loading-msg">Loading your sheet...</div>
+  </div>
+
+</div>
+
+<!-- NUMBER MODAL -->
+<div id="num-modal" class="modal-overlay hidden">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <div><div class="modal-title" id="nm-title"></div><div class="modal-sub" id="nm-sub"></div></div>
+      <button class="modal-close" onclick="closeNumModal()">✕</button>
+    </div>
+    <div class="modal-body" id="nm-body"></div>
+  </div>
+</div>
+
+<!-- GENERAL LOG MODAL -->
+<div id="gen-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <div><div class="modal-title" id="gm-title"></div><div class="modal-sub" id="gm-sub"></div></div>
+      <button class="modal-close" onclick="closeGenModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="gm-notes-section hidden" style="margin-bottom:12px">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Recent notes</div>
+        <div id="gm-notes-preview" style="font-size:11px;color:var(--text2);white-space:pre-wrap;background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--radius);padding:6px 9px;max-height:54px;overflow-y:auto"></div>
+      </div>
+      <div style="font-size:11px;color:var(--text2);background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--radius);padding:7px 10px;margin-bottom:12px">
+        Use this when you reached a lead through a number not listed, or need to log a general note.
+      </div>
+      <div class="form-grid">
+        <div class="form-group"><label>Who answered</label>
+          <select id="gm-who">
+            <option value="NO CONTACT">NO CONTACT</option>
+            <option value="GK">GK</option><option value="EA">EA</option>
+            <option value="CEO">CEO</option><option value="CRA">CRA</option><option value="CFO">CFO</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Outcome</label>
+          <select id="gm-outcome" onchange="checkGenWarnings()">
+            <option>No Answer</option><option>Left Message</option><option>Check Back Later</option>
+            <option>Expressed Interest</option><option>Follow-up</option>
+            <option>Email requested/ Follow-up</option><option>Decline</option>
+            <option>Wrong Contact</option><option>Wrong Number</option>
+            <option>Not the bank's fund type</option><option>Open</option>
+            <option>Request To Unsubscribe</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Spoke to</label><input type="text" id="gm-spoke" placeholder="Name, title"/></div>
+        <div class="form-group"><label>Add / update number</label><input type="text" id="gm-newnum" placeholder="XXX.XXX.XXXX"/></div>
+      </div>
+      <div class="form-group"><label>Notes</label><textarea id="gm-notes" rows="3" placeholder="What happened?"></textarea></div>
+      <div id="gm-decline-warn" class="warn-box hidden">Decline will stop ALL calling at this bank.</div>
+      <div class="modal-actions">
+        <button class="btn-primary" onclick="saveGenLog()">Save log</button>
+        <button class="btn-cancel" onclick="closeGenModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- UNDO MODAL -->
+<div id="undo-modal" class="modal-overlay hidden">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <div class="modal-title">Undo this entry?</div>
+      <button class="modal-close" onclick="closeUndoModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="undo-desc" style="font-size:13px;color:var(--text2);margin-bottom:1rem;line-height:1.5"></p>
+      <div class="warn-box">This will remove the entry and restore the sheet to its previous state.</div>
+      <div class="modal-actions" style="margin-top:1rem">
+        <button class="btn-undo-confirm" onclick="confirmUndo()">Yes, undo</button>
+        <button class="btn-cancel" onclick="closeUndoModal()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- EOD MODAL -->
+<div id="eod-modal" class="modal-overlay hidden">
+  <div class="modal modal-wide">
+    <div class="modal-header">
+      <div><div class="modal-title">End of day report</div><div class="modal-sub" id="eod-sub"></div></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn-sm" onclick="copyReport()">📋 Copy</button>
+        <button class="modal-close" onclick="closeEOD()">✕</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="form-group" style="margin-bottom:1rem">
+        <label>Total dials from CloudTalk (overrides app count)</label>
+        <input type="number" id="eod-dials" style="max-width:260px"/>
+      </div>
+      <pre id="eod-text" class="report-preview"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS MODAL -->
+<div id="settings-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Settings</div>
+      <button class="modal-close" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group"><label>Your name</label><input type="text" id="set-name"/></div>
+      <div class="form-group"><label>Main sheet ID</label><input type="text" id="set-sheet-id"/></div>
+      <div class="form-group"><label>Your tab name</label><input type="text" id="set-tab"/></div>
+      <div class="form-group"><label>Contact update sheet ID</label><input type="text" id="set-update-id"/></div>
+      <div class="form-group"><label>Contact update tab name</label><input type="text" id="set-update-tab"/></div>
+      <div class="form-group"><label>Google API Key</label><input type="text" id="set-api-key"/></div>
+      <div style="display:flex;gap:8px;margin-top:1rem">
+        <button class="btn-primary" onclick="saveSettings()">Save</button>
+        <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="app2.js"></script>
+</body>
+</html>
