@@ -74,7 +74,15 @@ async function loadSheet(){
     // Find smart start position
     navIdx=findSmartStartIdx();
     applyFilters(false);
-  }catch(e){el('bank-view').innerHTML='<div class="loading error">❌ Network error. Check your connection.</div>';}
+  }catch(e){
+    // Show error but still try to render banks if we have them
+    if(banks.length){
+      navIdx=findSmartStartIdx();
+      applyFilters(false);
+    }else{
+      el('bank-view').innerHTML='<div class="loading error">❌ '+e.message+'<br><br>Check Sheet ID, tab name, and API key in ⚙️ Settings.</div>';
+    }
+  }
 }
 
 function migrateLegacyLogs(){
@@ -849,7 +857,8 @@ async function removeContactUpdate(ri,role,phone,bankData){
 }
 
 async function detectSheetStrikethroughs(){
-  // Read rich text formatting from phone columns to detect crossed-out numbers
+  // Disabled for now - rich text API call causing network errors
+  return;
   try{
     const phoneCols=['J','T','AD']; // CEO=col10, CRA=col20, CFO=col30 (A=1)
     const roleMap={'J':'CEO','T':'CRA','AD':'CFO'};
