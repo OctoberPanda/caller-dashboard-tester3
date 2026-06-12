@@ -28,9 +28,10 @@ const FLAG_OPTIONS=['Black box VM','Dead air','Unidentifiable VM','No answer —
 
 const OC={'Expressed Interest':'green','Follow-up':'blue','Email requested/ Follow-up':'blue','Left Message':'blue','Check Back Later':'amber','Open':'amber','Decline':'red','Request To Unsubscribe':'red','Wrong Number':'red','Wrong Contact':'red',"Not the bank's fund type":'red'};
 
-let cfg={},banks=[],logs={},flags={},calls={},apptHeld={},openRI=null,numCtx=null,genCtx=null,undoCtx=null,workDate='';
+let cfg={},banks=[],logs={},flags={},calls={},apptHeld={},emailLogs={},openRI=null,numCtx=null,genCtx=null,undoCtx=null,workDate='';
 let navList=[],navIdx=0;
 const APPT_KEY='cdt3_appt';
+const EMAIL_KEY='cdt3_email';
 
 // Keyboard navigation
 document.addEventListener('keydown',(e)=>{
@@ -41,7 +42,7 @@ document.addEventListener('keydown',(e)=>{
 });
 
 window.onload=()=>{
-  cfg=loadCfg();logs=loadLogs();flags=loadFlags();calls=loadCalls();apptHeld=loadAppt();
+  cfg=loadCfg();logs=loadLogs();flags=loadFlags();calls=loadCalls();apptHeld=loadAppt();emailLogs=loadEmailLogs();
   // Migrate old cdt2 logs if cdt3 is empty
   migrateLegacyLogs();
   workDate=cfg.lastWorkDate||initWorkDate();
@@ -180,6 +181,15 @@ function isDeclined(ri){return isDeclinedToday(ri)||isDeclinedSheet(ri);}
 function isApptHeld(ri){return apptHeld[bankId(ri)]===true;}
 function setApptHeld(ri){apptHeld[bankId(ri)]=true;localStorage.setItem(APPT_KEY,JSON.stringify(apptHeld));renderStats();if(openRI===ri)renderBody(ri);rebuildCard(ri,true);toast('Appointment marked as held — bank removed from call list','success');}
 function loadAppt(){try{return JSON.parse(localStorage.getItem(APPT_KEY))||{};}catch{return{};}}
+function loadEmailLogs(){try{return JSON.parse(localStorage.getItem(EMAIL_KEY))||{};}catch{return{};}}
+function saveEmailLogs(){localStorage.setItem(EMAIL_KEY,JSON.stringify(emailLogs));}
+function getEmailLog(ri,role){return emailLogs[bankId(ri)+'__'+role]||null;}
+function setEmailLog(ri,role,date,recipient){
+  emailLogs[bankId(ri)+'__'+role]={date,recipient,ri,role};
+  saveEmailLogs();
+  showCurrentBank();
+  toast('Email logged','success');
+}
 function bankCalledToday(ri){return allLogsForDate().some(l=>l.ri===ri&&l.called);}
 function bankComplete(ri){return['CEO','CRA','CFO'].every(r=>logsForDate(ri,r).some(l=>l.called));}
 function bankIncomplete(ri){const c=['CEO','CRA','CFO'].filter(r=>logsForDate(ri,r).some(l=>l.called)).length;return c>0&&c<3;}
@@ -210,7 +220,8 @@ function mostRecentEmail(d,role){
 
 function renderStats(){
   const all=allLogsForDate();
-  const dials=all.filter(l=>l.called).length;
+  // Dials = total numbers marked Called across all logs today
+  const dials=allLogsForDate().reduce((acc,l)=>acc+(l.dialCount||1),0);
   // Bank reached = called at least 1 number regardless of outcome or who answered
   const banksReached=new Set(all.filter(l=>l.called).map(l=>l.ri)).size;
   const peopleReached=new Set(all.filter(l=>l.called&&l.who&&l.who!=='NO CONTACT').map(l=>l.ri+'_'+l.role)).size;
@@ -230,8 +241,8 @@ function buildStateFilter(){
 }
 function visibleBanks(){const status=gv('f-status');if(status==='declined-all')return banks.filter(b=>isDeclined(b.ri));if(status==='appt-held')return banks.filter(b=>isApptHeld(b.ri));return banks.filter(b=>!isDeclinedSheet(b.ri)&&!isApptHeld(b.ri));}
 function applyFilters(resetNav){
-  if(resetNav!==false)navIdx=0;  // reset position on manual filter change
-  const search=gv('search').toLowerCase(),status=gv('f-status');
+  if(resetNav!==false)navIdx=0;
+  const search=gv('search').toLowerCase().trim(),status=gv('f-status');
   const result=visibleBanks().filter(b=>{
     const ri=b.ri,name=String(b.d[C.BANK]||'').toLowerCase();
     if(search&&!name.includes(search))return false;
@@ -257,39 +268,36 @@ function renderList(list){
 }
 
 function findSmartStartIdx(){
-  // Find the most recent call date across all banks
-  const allDates=[];
-  banks.forEach(b=>{
-    ['CEO','CRA','CFO'].forEach(r=>{
-      const d=b.d[RC[r].recent];
-      if(d){
-        try{
-          const dt=new Date(d);
-          if(!isNaN(dt))allDates.push({dt,ri:b.ri});
-        }catch{}
-      }
-    });
-  });
-  if(!allDates.length)return 0;
-  // Get most recent date
-  const maxDt=new Date(Math.max(...allDates.map(x=>x.dt)));
-  // Find last bank in sheet order that has that date
-  let lastIdx=-1;
+  // Find most recent date string across all banks (compare as strings M/D/YYYY)
+  let maxDateMs=0, lastBankIdx=-1;
   banks.forEach((b,idx)=>{
     ['CEO','CRA','CFO'].forEach(r=>{
-      const d=b.d[RC[r].recent];
-      if(d){
-        try{
-          const dt=new Date(d);
-          if(Math.abs(dt-maxDt)<86400000){// same day
-            lastIdx=idx;
-          }
-        }catch{}
-      }
+      const raw=b.d[RC[r].recent];
+      if(!raw)return;
+      try{
+        const dt=new Date(raw);
+        if(!isNaN(dt.getTime())&&dt.getTime()>maxDateMs){
+          maxDateMs=dt.getTime();
+        }
+      }catch{}
     });
   });
-  // Start at the bank AFTER the last called bank
-  if(lastIdx>=0&&lastIdx+1<banks.length)return lastIdx+1;
+  if(!maxDateMs)return 0;
+  // Find last bank (highest index) that has that most recent date
+  banks.forEach((b,idx)=>{
+    ['CEO','CRA','CFO'].forEach(r=>{
+      const raw=b.d[RC[r].recent];
+      if(!raw)return;
+      try{
+        const dt=new Date(raw);
+        if(!isNaN(dt.getTime())&&Math.abs(dt.getTime()-maxDateMs)<86400000){
+          lastBankIdx=idx;
+        }
+      }catch{}
+    });
+  });
+  if(lastBankIdx>=0&&lastBankIdx+1<banks.length)return lastBankIdx+1;
+  if(lastBankIdx>=0)return 0; // wrap around
   return 0;
 }
 
@@ -404,6 +412,9 @@ function buildLeadCard(ri,d,role,bankDeclined){
   const hasInt=rLogs.some(l=>l.outcome==='Expressed Interest')||outcome==='Expressed Interest';
   const oc=OC[outcome]||'';
   const statusTag=called?'<span class="complete-tag">Called</span>':'<span class="pending-tag">Pending</span>';
+  // Email log display
+  const eLog=getEmailLog(ri,role);
+  const emailBadge=eLog?'<div class="email-log-badge">📧 '+esc(eLog.date)+(eLog.recipient?' to '+esc(eLog.recipient):'')+'</div>':'';
 
   let attn='';
   // Per-number counters for attention flags
@@ -458,6 +469,7 @@ function buildLeadCard(ri,d,role,bankDeclined){
     if(hasInt)bottomAction+='<button class="btn-appt-held" onclick="setApptHeld('+ri+')">✓ Appointment held</button>';
   }
 
+  const emailBtn='<button class="btn-email-log" onclick="promptEmailLog('+ri+',\''+role+'\')">📧 Log email sent</button>';
   return '<div class="lead-card'+(hasSOS?' sos':'')+(hasInt?' interest':'')+(called?' complete-lead':'')+(bankDeclined?' declined-lead':'')+'"><div class="lead-header"><div class="lead-header-left"><div class="lead-role-row"><span class="role-tag">'+role+'</span>'+statusTag+(outcome?'<span class="outcome-chip '+oc+'">'+esc(outcome)+'</span>':'')+'</div><div class="lead-name">'+esc(name)+'</div>'+(ea?'<div class="lead-ea">EA: '+esc(ea)+'</div>':'')+'</div><div class="lead-header-right">'+(recent?'Last: '+recent+'<br>':'')+times+'x total</div></div><div class="lead-body">'+attn+phonesHtml+notesHtml+todayHtml+bottomAction+'</div></div>';
 }
 
@@ -479,13 +491,19 @@ function openNumModal(ri,role){
   }else{
     phones.forEach((ph,pi)=>{
       const bad=isPhoneBad(ri,role,ph),reason=bad?getBadReason(ri,role,ph):'';
+      const nbase=phoneBase(ph),nsfx=phoneSuffix(ph);
       html+='<div class="num-section" id="ns-'+pi+'">';
       html+='<div class="num-section-header">';
-      html+='<span class="num-ph'+(bad?' bad':'')+'">'+(bad?'<s>':'')+esc(ph)+(bad?'</s>':'')+' '+(bad?'<span class="bad-reason">'+esc(reason)+'</span>':'')+'</span>';
+      html+='<span class="num-ph'+(bad?' bad':'')+'">'+(bad?'<s>':'')+esc(nbase)+(bad?'</s>':'')+(nsfx?' <span class="num-suffix-display">'+esc(nsfx)+'</span>':'')+' '+(bad?'<span class="bad-reason">'+esc(reason)+'</span>':'')+'</span>';
       html+='<div class="called-toggle"><button class="toggle-btn called-yes" id="cal-yes-'+pi+'" onclick="setCalledState('+pi+',true)">Called</button><button class="toggle-btn called-no active" id="cal-no-'+pi+'" onclick="setCalledState('+pi+',false)">Not called</button></div>';
       html+='</div>';
       // Called section (hidden by default)
       html+='<div id="called-form-'+pi+'" class="called-form hidden">';
+      html+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:6px 9px;background:var(--surface3);border-radius:7px">';
+      html+='<input type="checkbox" id="nm-has-disp-'+pi+'" checked style="width:15px;height:15px" onchange="toggleDispForm('+pi+')"/>';
+      html+='<label for="nm-has-disp-'+pi+'" style="font-size:12px;color:var(--text2);cursor:pointer">Log outcome and notes for this number</label>';
+      html+='</div>';
+      html+='<div id="disp-form-'+pi+'">';
       html+='<div class="form-grid">';
       html+='<div class="form-group"><label>Who answered</label><select id="nm-who-'+pi+'"><option value="NO CONTACT">NO CONTACT</option><option value="GK">GK</option><option value="EA">EA</option><option value="CEO">CEO</option><option value="CRA">CRA</option><option value="CFO">CFO</option></select></div>';
       html+='<div class="form-group"><label>Outcome</label><select id="nm-outcome-'+pi+'" onchange="checkDeclineWarn('+pi+')"><option>No Answer</option><option>Left Message</option><option>Check Back Later</option><option>Expressed Interest</option><option>Follow-up</option><option>Email requested/ Follow-up</option><option>Decline</option><option>Wrong Contact</option><option>Wrong Number</option><option>Not the bank\'s fund type</option><option>Open</option><option>Request To Unsubscribe</option></select></div>';
@@ -494,6 +512,7 @@ function openNumModal(ri,role){
       html+='</div>';
       html+='<div class="form-group"><label>Notes</label><textarea id="nm-notes-'+pi+'" rows="2" placeholder="What happened?"></textarea></div>';
       html+='<div id="nm-decline-warn-'+pi+'" class="warn-box hidden">Decline will stop ALL calling at this bank.</div>';
+      html+='</div>';
       html+='<div class="form-group"><label>Is this number bad?</label><select id="nm-flag-'+pi+'"><option value="">— number is fine</option>';
       FLAG_OPTIONS.forEach(f=>{html+='<option>'+f+'</option>';});
       html+='</select></div>';
@@ -542,6 +561,17 @@ function openNumModal(ri,role){
   el('num-modal').classList.remove('hidden');
 }
 
+function promptEmailLog(ri,role){
+  const recipient=prompt('Who received the email? (name or title, leave blank to skip)');
+  if(recipient===null)return; // cancelled
+  setEmailLog(ri,role,workDateDisplay(),recipient.trim());
+}
+
+function toggleDispForm(pi){
+  const checked=el('nm-has-disp-'+pi)?.checked;
+  el('disp-form-'+pi)?.classList.toggle('hidden',!checked);
+}
+
 function setCalledState(pi,called){
   el('cal-yes-'+pi).classList.toggle('active',called);
   el('cal-no-'+pi).classList.toggle('active',!called);
@@ -570,32 +600,38 @@ async function saveNumModal(){
   let lastWho='',lastOutcome='',lastSpoke='',lastNewNum='',lastNotesTxt='',lastPhone='';
   let declineHappened=false;
 
+  // Track all called numbers and their outcomes for best-outcome logic
+  const calledNumbers=[];
+
   for(let pi=0;pi<phones.length;pi++){
     const ph=phones[pi];
     const calledYes=el('cal-yes-'+pi)?.classList.contains('active');
 
     if(calledYes){
       anyCall=true;
-      const who=el('nm-who-'+pi)?.value||'NO CONTACT';
-      const outcome=el('nm-outcome-'+pi)?.value||'No Answer';
-      const spoke=el('nm-spoke-'+pi)?.value.trim()||'';
+      const hasDisp=el('nm-has-disp-'+pi)?.checked!==false;
+      const who=hasDisp?(el('nm-who-'+pi)?.value||'NO CONTACT'):'NO CONTACT';
+      const outcome=hasDisp?(el('nm-outcome-'+pi)?.value||'No Answer'):'No Answer';
+      const spoke=hasDisp?(el('nm-spoke-'+pi)?.value.trim()||''):'';
       const newNum=el('nm-newnum-'+pi)?.value.trim()||'';
-      const notesTxt=el('nm-notes-'+pi)?.value.trim()||'';
+      const notesTxt=hasDisp?(el('nm-notes-'+pi)?.value.trim()||''):'';
       const flagIssue=el('nm-flag-'+pi)?.value||'';
 
-      lastWho=who;lastOutcome=outcome;lastSpoke=spoke;lastNewNum=newNum;lastNotesTxt=notesTxt;lastPhone=phones[pi]||'';
+      calledNumbers.push({ph,who,outcome,spoke,newNum,notesTxt,flagIssue,hasDisp});
+      lastPhone=ph;
       if(outcome==='Decline')declineHappened=true;
 
-      // Build note line for this number
-      const parts=[];
-      if(notesTxt)parts.push(notesTxt);
-      if(spoke)parts.push('Spoke to: '+spoke);
-      if(newNum)parts.push('New number: '+newNum);
-      // Decline handled internally — nothing about it goes to notes
-      if(flagIssue)parts.push(ph+' '+flagIssue);
-      if(parts.length)noteLines.push(parts.join('. ')+'.');
+      // Build note line only if there is something to note
+      if(hasDisp){
+        const parts=[];
+        if(notesTxt)parts.push(notesTxt);
+        if(spoke)parts.push('Spoke to: '+spoke);
+        if(newNum)parts.push('New number: '+newNum);
+        if(flagIssue)parts.push(ph+' '+flagIssue);
+        if(parts.length)noteLines.push(parts.join('. ')+'.');
+      }
 
-      // Update call counter
+      // Update call counter — each number called = 1 dial
       const cKey=bankId(ri)+'__'+role+'__'+ph;
       calls[cKey]=(calls[cKey]||0)+1;
 
@@ -618,7 +654,10 @@ async function saveNumModal(){
         }
       }
 
-      if(newNum)d[rc.phone]=d[rc.phone]?d[rc.phone]+'; '+newNum:newNum;
+      if(newNum){
+        // Add new number — never inherit flags from other numbers
+        d[rc.phone]=d[rc.phone]?d[rc.phone]+'; '+newNum:newNum;
+      }
     } else {
       // Not called — flag only
       const flagIssue=el('nm-flagonly-'+pi)?.value||'';
@@ -630,6 +669,13 @@ async function saveNumModal(){
         await writeContactUpdate(ri,role,ph,flagIssue,d,phones);
       }
     }
+  }
+
+  // Determine best outcome from all called numbers (sheet gets this)
+  const OUTCOME_PRIORITY=['Expressed Interest','Email requested/ Follow-up','Follow-up','Left Message','Check Back Later','Decline','Wrong Contact','Wrong Number',"Not the bank's fund type",'Open','Request To Unsubscribe','No Answer'];
+  if(calledNumbers.length){
+    const best=calledNumbers.filter(c=>c.hasDisp).sort((a,b)=>OUTCOME_PRIORITY.indexOf(a.outcome)-OUTCOME_PRIORITY.indexOf(b.outcome))[0]||calledNumbers[0];
+    lastWho=best.who;lastOutcome=best.outcome;lastSpoke=best.spoke;lastNewNum=best.newNum;lastNotesTxt=best.notesTxt;
   }
 
   if(!anyCall&&!anyFlag){toast('Nothing to save — select called or flag a number','error');return;}
@@ -812,8 +858,15 @@ async function undoFlag(ri,role,phone){
   const fKey=getFlagKey(ri,role,phone);if(!flags[fKey])return;
   flags[fKey].undone=true;saveFlags();
   const b=banks.find(x=>x.ri===ri),rc=RC[role];
-  const notes=String(b.d[rc.notes]||'').split('\n').filter(l=>!l.includes(phone)).join('\n');
-  b.d[rc.notes]=notes;await writeSheet([{row:ri,col:rc.notes,value:notes}]);
+  // Remove flag note line from notes
+  const notes=String(b.d[rc.notes]||'').split('\n').filter(l=>!l.includes(phoneDigits(phone).slice(0,6))).join('\n').trim();
+  b.d[rc.notes]=notes;
+  await writeSheet([{row:ri,col:rc.notes,value:notes}]);
+  // Remove strikethrough from sheet
+  try{
+    await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:rc.phone,phone})});
+  }catch(e){console.error('Unstrikethrough error',e);}
   await removeContactUpdate(ri,role,phone,b.d);
   renderStats();rebuildCard(ri,false);toast('Flag removed','success');
 }

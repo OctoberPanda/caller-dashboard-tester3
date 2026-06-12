@@ -6,7 +6,6 @@
   --green:#72c45a;--green-bg:#152a10;--green-border:#254a18;
   --red:#e06060;--red-bg:#2d1515;--red-border:#5a2020;
   --amber:#d4a843;--amber-bg:#2d2010;--amber-border:#5a4010;
-  --pastel-bg:#c8d8e8;--pastel-text:#1a2535;
   --radius:8px;--radius-lg:13px;
   --card-text:#dce6f0;--card-text2:#b0c8e0;--card-text3:#7a9ab8;
 }
@@ -105,7 +104,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .phone-num{font-size:16px;color:var(--blue);font-weight:700;cursor:pointer;display:block;letter-spacing:.02em}
 .phone-num:hover{opacity:.8}
 .phone-num.bad{color:var(--red);text-decoration:line-through}
-.phone-suffix{font-size:11px;color:var(--card-text3);display:block;margin-top:2px;font-style:italic}
+.phone-suffix{font-size:13px;color:var(--amber);display:block;margin-top:2px;font-weight:600}
 .bad-reason{font-size:10px;color:var(--red);background:var(--red-bg);border:0.5px solid var(--red-border);border-radius:4px;padding:1px 6px;display:inline-block;margin-top:3px}
 .call-cnt{font-size:10px;background:var(--surface3);color:var(--card-text3);border-radius:4px;padding:1px 6px;margin-left:4px}
 .phone-btns{display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end}
@@ -114,6 +113,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .btn-log-sm{background:var(--blue);color:#fff;border:none;border-radius:5px;padding:3px 10px;font-size:11px;cursor:pointer;font-family:inherit}
 .btn-undo{background:var(--amber-bg);color:var(--amber);border:0.5px solid var(--amber-border);border-radius:5px;padding:3px 9px;font-size:11px;cursor:pointer;font-family:inherit;font-weight:600}
 .no-phone{font-size:12px;color:var(--card-text3);padding:4px 0}
+
+/* EMAIL LOG */
+.email-log-badge{font-size:11px;color:var(--blue);background:var(--blue-bg);border:0.5px solid var(--blue-border);border-radius:6px;padding:4px 8px}
+.btn-email-log{width:100%;background:transparent;color:var(--text3);border:0.5px dashed var(--border);border-radius:7px;padding:4px;font-size:10px;cursor:pointer;font-family:inherit;margin-top:4px}
+.btn-email-log:hover{background:var(--surface2);color:var(--text2)}
 
 /* ATTENTION FLAGS */
 .attention-flag{font-size:11px;background:var(--amber-bg);color:var(--amber);border:0.5px solid var(--amber-border);border-radius:var(--radius);padding:4px 9px}
@@ -180,7 +184,7 @@ select option{background:var(--surface2);color:var(--text)}
 .num-section-header{display:flex;align-items:center;justify-content:space-between;padding:8px 11px;background:var(--surface3);border-bottom:1px solid var(--border)}
 .num-ph{font-size:14px;font-weight:700;color:var(--blue)}
 .num-ph.bad{color:var(--red)}
-.num-suffix-display{font-size:11px;color:var(--text3);margin-left:8px;font-style:italic}
+.num-suffix-display{font-size:12px;color:var(--amber);margin-left:8px;font-weight:600}
 .called-toggle{display:flex;gap:4px}
 .toggle-btn{padding:3px 11px;border-radius:var(--radius);font-size:11px;cursor:pointer;font-family:inherit;border:1px solid var(--border2);background:var(--surface2);color:var(--text2)}
 .toggle-btn.called-yes.active{background:var(--blue);color:#fff;border-color:var(--blue)}
