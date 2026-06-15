@@ -978,7 +978,8 @@ function showEOD(){
   const calledLogs=all.filter(l=>l.called);
   const appDials=calledLogs.length;
   // Bank reached = called at least 1 number regardless of outcome
-  const banksReached=new Set(calledLogs.map(l=>l.ri)).size;
+  // CEO definition: banks reached = a human answered (who is not NO CONTACT)
+  const banksReached=new Set(calledLogs.filter(l=>l.who&&l.who!=='NO CONTACT').map(l=>l.ri)).size;
   const peopleReached=new Set(calledLogs.filter(l=>l.who&&l.who!=='NO CONTACT').map(l=>l.ri+'_'+l.role)).size;
 
   // Connects — banks where real person reached, priority: Expressed Interest > Left Message > Check Back Later > No Answer
