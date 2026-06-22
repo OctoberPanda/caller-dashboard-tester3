@@ -204,3 +204,9 @@ select option{background:var(--surface2);color:var(--text)}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--surface3);color:var(--text);border:1px solid var(--border2);padding:10px 20px;border-radius:var(--radius);font-size:13px;z-index:999;box-shadow:0 4px 20px rgba(0,0,0,.4)}
 .toast.error{background:var(--red-bg);color:var(--red);border-color:var(--red-border)}
 .toast.success{background:var(--green-bg);color:var(--green);border-color:var(--green-border)}
+
+/* GO TO BANK + wider nav filter */
+.nav-filter-wrap{display:flex;gap:8px;width:100%;max-width:760px;flex-wrap:wrap;justify-content:center}
+.nav-filter-wrap input{flex:1;min-width:140px;font-size:12px}
+.nav-filter-wrap select{font-size:12px;width:auto}
+#goto-input{border-color:var(--blue);background:var(--blue-bg)}

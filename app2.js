@@ -6,6 +6,7 @@ const CFG_KEY='cdt3_config';
 const LOGS_KEY='cdt3_logs';
 const FLAGS_KEY='cdt3_flags';
 const CALLS_KEY='cdt3_calls'; // per-number call counters
+const CALLMETA_KEY='cdt3_callmeta'; // per-number no-answer/attempted counts for 2x/7x rule
 
 // COLUMN MAP (0-based)
 const C={
@@ -28,7 +29,7 @@ const FLAG_OPTIONS=['Black box VM','Dead air','Unidentifiable VM','No answer —
 
 const OC={'Expressed Interest':'green','Follow-up':'blue','Email requested/ Follow-up':'blue','Left Message':'blue','Check Back Later':'amber','Open':'amber','Decline':'red','Request To Unsubscribe':'red','Wrong Number':'red','Wrong Contact':'red',"Not the bank's fund type":'red'};
 
-let cfg={},banks=[],logs={},flags={},calls={},apptHeld={},emailLogs={},openRI=null,numCtx=null,genCtx=null,undoCtx=null,workDate='';
+let cfg={},banks=[],logs={},flags={},calls={},apptHeld={},emailLogs={},callMeta={},openRI=null,numCtx=null,genCtx=null,undoCtx=null,workDate='';
 let navList=[],navIdx=0;
 const APPT_KEY='cdt3_appt';
 const EMAIL_KEY='cdt3_email';
@@ -42,7 +43,7 @@ document.addEventListener('keydown',(e)=>{
 });
 
 window.onload=()=>{
-  cfg=loadCfg();logs=loadLogs();flags=loadFlags();calls=loadCalls();apptHeld=loadAppt();emailLogs=loadEmailLogs();
+  cfg=loadCfg();logs=loadLogs();flags=loadFlags();calls=loadCalls();apptHeld=loadAppt();emailLogs=loadEmailLogs();callMeta=loadCallMeta();
   // Migrate old cdt2 logs if cdt3 is empty
   migrateLegacyLogs();
   workDate=cfg.lastWorkDate||initWorkDate();
@@ -198,17 +199,27 @@ function getFlagKey(ri,role,phone){return bankId(ri)+'__'+role+'__'+phone;}
 const BAD_KW=['black box','dead air','wrong number','not in service','fax machine','did not hear','unidentifiable','wrong bank','wrong contact','call screened','invalid number','call rejected'];
 function isPhoneBad(ri,role,phone){
   const f=flags[getFlagKey(ri,role,phone)];if(f&&!f.undone)return true;
+  if(f&&f.undone)return false; // explicitly unflagged — never auto-flag again
   const b=banks.find(x=>x.ri===ri);if(!b)return false;
-  const n=String(b.d[RC[role].notes]||'').toLowerCase();
-  const digits=phoneDigits(phone);
-  const noteDigits=n.replace(/[^\d]/g,'');
-  return !!(digits&&noteDigits.includes(digits)&&BAD_KW.some(k=>n.includes(k)));
+  const digits=phoneDigits(phone);if(!digits)return false;
+  // Check each notes line — the phone digits AND a bad keyword must be on the SAME line
+  const lines=String(b.d[RC[role].notes]||'').toLowerCase().split('\n');
+  return lines.some(line=>{
+    const lineDigits=line.replace(/[^\d]/g,'');
+    return lineDigits.includes(digits)&&BAD_KW.some(k=>line.includes(k));
+  });
 }
 function getBadReason(ri,role,phone){
   const f=flags[getFlagKey(ri,role,phone)];if(f&&!f.undone)return f.issue;
   const b=banks.find(x=>x.ri===ri);if(!b)return'';
-  const n=String(b.d[RC[role].notes]||'');
-  for(const kw of BAD_KW){if(n.toLowerCase().includes(kw))return kw.split(' ').map(w=>w[0].toUpperCase()+w.slice(1)).join(' ');}
+  const digits=phoneDigits(phone);
+  const lines=String(b.d[RC[role].notes]||'').split('\n');
+  for(const line of lines){
+    const lineDigits=line.replace(/[^\d]/g,'');
+    if(lineDigits.includes(digits)){
+      for(const kw of BAD_KW){if(line.toLowerCase().includes(kw))return kw.split(' ').map(w=>w[0].toUpperCase()+w.slice(1)).join(' ');}
+    }
+  }
   return'Bad number';
 }
 function getCallCount(ri,role,phone){return calls[bankId(ri)+'__'+role+'__'+phone]||0;}
@@ -239,7 +250,18 @@ function buildStateFilter(){
   const sel=el('f-state');const states=[...new Set(banks.map(b=>b.d[C.STATE]).filter(Boolean))].sort();
   sel.innerHTML='<option value="">All states</option>';states.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;sel.appendChild(o);});
 }
-function visibleBanks(){const status=gv('f-status');if(status==='declined-all')return banks.filter(b=>isDeclined(b.ri));if(status==='appt-held')return banks.filter(b=>isApptHeld(b.ri));return banks.filter(b=>!isDeclinedSheet(b.ri)&&!isApptHeld(b.ri));}
+function hasInterest(ri){const b=banks.find(x=>x.ri===ri);if(!b)return false;return logsForDate(ri).some(l=>l.outcome==='Expressed Interest')||['CEO','CRA','CFO'].some(r=>b.d[RC[r].outcome]==='Expressed Interest');}
+function isSetAside(ri){return isDeclined(ri)||isApptHeld(ri)||hasInterest(ri);}
+function visibleBanks(){
+  const status=gv('f-status');
+  // Set-aside view shows declined, expressed interest, and appointment held
+  if(status==='set-aside')return banks.filter(b=>isSetAside(b.ri));
+  if(status==='declined-all')return banks.filter(b=>isDeclined(b.ri));
+  if(status==='appt-held')return banks.filter(b=>isApptHeld(b.ri));
+  if(status==='interest')return banks.filter(b=>hasInterest(b.ri));
+  // Main carousel: exclude declined, appointment held, and expressed interest
+  return banks.filter(b=>!isDeclinedSheet(b.ri)&&!isApptHeld(b.ri)&&!hasInterest(b.ri)&&!isDeclinedToday(b.ri));
+}
 function applyFilters(resetNav){
   if(resetNav!==false)navIdx=0;
   const search=gv('search').toLowerCase().trim(),status=gv('f-status');
@@ -259,6 +281,34 @@ function applyFilters(resetNav){
   renderList(result);
 }
 // NAVIGATION
+function onSearch(){
+  // Live search — filter as you type, no refresh needed
+  navIdx=0;
+  applyFilters(false);
+}
+function onFilter(){navIdx=0;applyFilters(false);}
+function gotoBank(){
+  const val=gv('goto-input').trim();
+  if(!val)return;
+  // Try row number first
+  let targetRi=null;
+  if(/^\d+$/.test(val)){
+    targetRi=parseInt(val);
+  }else{
+    // Search by name across ALL banks
+    const match=banks.find(b=>String(b.d[C.BANK]||'').toLowerCase().includes(val.toLowerCase()));
+    if(match)targetRi=match.ri;
+  }
+  if(targetRi===null){toast('Bank not found','error');return;}
+  // Reset filter to all banks and jump to that bank
+  el('f-status').value='';
+  el('search').value='';
+  const list=visibleBanks();
+  renderList(list);
+  const idx=list.findIndex(b=>b.ri===targetRi);
+  if(idx>=0){navIdx=idx;updateNavCounter();showCurrentBank();el('goto-input').value='';toast('Jumped to bank','success');}
+  else{toast('Bank is set aside (declined/interest/appt)','error');}
+}
 function renderList(list){
   navList=list;
   // Clamp index
@@ -602,6 +652,7 @@ async function saveNumModal(){
 
   // Track all called numbers and their outcomes for best-outcome logic
   const calledNumbers=[];
+  const bgTasks=[]; // network calls to fire after modal closes
 
   for(let pi=0;pi<phones.length;pi++){
     const ph=phones[pi];
@@ -626,21 +677,43 @@ async function saveNumModal(){
         const parts=[];
         if(notesTxt)parts.push(notesTxt);
         if(spoke)parts.push('Spoke to: '+spoke);
-        if(newNum)parts.push('New number: '+newNum);
         if(flagIssue)parts.push(ph+' '+flagIssue);
         if(parts.length)noteLines.push(parts.join('. ')+'.');
+        // New number goes on its OWN line — never beside a flag keyword
+        if(newNum)noteLines.push('New number: '+newNum+'.');
       }
 
       // Update call counter — each number called = 1 dial
       const cKey=bankId(ri)+'__'+role+'__'+ph;
       calls[cKey]=(calls[cKey]||0)+1;
 
+      // Track no-answer and attempted counts for 2x/7x auto-flag rule
+      if(hasDisp){
+        const naKey=cKey+'__na', atKey=cKey+'__at';
+        if(outcome==='No Answer'){callMeta[naKey]=(callMeta[naKey]||0)+1;}
+        if(['Left Message','Follow-up','Email requested/ Follow-up','Check Back Later'].includes(outcome)){callMeta[atKey]=(callMeta[atKey]||0)+1;}
+        // Auto-flag at 2x no answer
+        if((callMeta[naKey]||0)>=2&&!flags[getFlagKey(ri,role,ph)]){
+          anyFlag=true;
+          flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:'2x no answer',undone:false,called:true,date:workDate,auto:true};
+          bgTasks.push(()=>strikethrough(ri,rc.phone,ph));
+          bgTasks.push(()=>writeContactUpdate(ri,role,ph,'2x no answer',d,phones));
+        }
+        // Auto-flag at 7x attempted
+        if((callMeta[atKey]||0)>=7&&!flags[getFlagKey(ri,role,ph)]){
+          anyFlag=true;
+          flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:'7x attempted',undone:false,called:true,date:workDate,auto:true};
+          bgTasks.push(()=>strikethrough(ri,rc.phone,ph));
+          bgTasks.push(()=>writeContactUpdate(ri,role,ph,'7x attempted',d,phones));
+        }
+      }
+
       // Save flag if issue selected
       if(flagIssue){
         anyFlag=true;
         flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:flagIssue,undone:false,called:true,date:workDate};
-        await strikethrough(ri,rc.phone,ph);
-        await writeContactUpdate(ri,role,ph,flagIssue,d,phones);
+        bgTasks.push(()=>strikethrough(ri,rc.phone,ph));
+        bgTasks.push(()=>writeContactUpdate(ri,role,ph,flagIssue,d,phones));
         // Auto-flag same number on other roles if shared
         const digits=phoneDigits(ph);
         for(const otherRole of['CEO','CRA','CFO'].filter(r=>r!==role)){
@@ -649,7 +722,7 @@ async function saveNumModal(){
           const matchPh=otherPhones.find(op=>phoneDigits(op)===digits);
           if(matchPh){
             flags[getFlagKey(ri,otherRole,matchPh)]={ri,role:otherRole,phone:matchPh,issue:flagIssue,undone:false,called:false,sharedFrom:role,date:workDate};
-            await strikethrough(ri,orc.phone,matchPh);
+            bgTasks.push(()=>strikethrough(ri,orc.phone,matchPh));
           }
         }
       }
@@ -665,8 +738,8 @@ async function saveNumModal(){
         anyFlag=true;
         flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:flagIssue,undone:false,called:false,date:workDate};
         noteLines.push(ph+' '+flagIssue+'.');
-        await strikethrough(ri,rc.phone,ph);
-        await writeContactUpdate(ri,role,ph,flagIssue,d,phones);
+        bgTasks.push(()=>strikethrough(ri,rc.phone,ph));
+        bgTasks.push(()=>writeContactUpdate(ri,role,ph,flagIssue,d,phones));
       }
     }
   }
@@ -698,11 +771,9 @@ async function saveNumModal(){
         const dateInN=existingN.includes(dateStr);
         const connNote=dateInN?(ph+' connected.'):(dateStr+'\n'+ph+' connected.');
         d[rc.notes]=existingN?(existingN+'\n'+connNote):connNote;
-        // Remove strikethrough in sheet
-        await strikethrough(ri,rc.phone,ph); // re-strikethrough will be handled by removing flag
-        // Actually send un-strikethrough request
-        await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:rc.phone,phone:ph})});
+        // Remove strikethrough in sheet (background)
+        bgTasks.push(()=>fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:rc.phone,phone:ph})}));
       }
     }
   }
@@ -725,11 +796,11 @@ async function saveNumModal(){
   }
 
   // Save log entry
-  const logEntry={id:genId(),ri,role,who:lastWho||'NO CONTACT',outcome:lastOutcome||'',noteEntry,noteText:noteLines.join(' '),notesTxt:lastNotesTxt||'',spokeTo:lastSpoke||'',newNum:lastNewNum||'',phone:lastPhone||'',called:anyCall,date:workDate,before,deleted:false};
+  const logEntry={id:genId(),ri,role,who:lastWho||'NO CONTACT',outcome:lastOutcome||'',noteEntry,noteText:noteLines.join(' '),notesTxt:lastNotesTxt||'',spokeTo:lastSpoke||'',newNum:lastNewNum||'',phone:lastPhone||'',called:anyCall,dialCount:calledNumbers.length,date:workDate,before,deleted:false};
   const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(logEntry);
-  saveLogs();saveFlags();saveCalls();
+  saveLogs();saveFlags();saveCalls();saveCallMeta();
 
-  // Write to sheet
+  // Write to sheet (background — don't block modal close)
   const updates=[{row:ri,col:rc.notes,value:d[rc.notes]||''}];
   if(anyCall){
     updates.push({row:ri,col:rc.recent,value:d[rc.recent]});
@@ -738,16 +809,19 @@ async function saveNumModal(){
     updates.push({row:ri,col:rc.who,value:d[rc.who]});
     if(lastNewNum)updates.push({row:ri,col:rc.phone,value:d[rc.phone]});
   }
-  await writeSheet(updates);
 
   if(declineHappened){
-    // Only log decline in app — do NOT write to other leads' sheet columns
     const decLog={id:genId(),ri,role,who:lastWho,outcome:'Decline',noteEntry:'',noteText:'Decline',called:true,date:workDate,before:{},deleted:false,isDecline:true};
     if(!logs[key])logs[key]=[];logs[key].push(decLog);saveLogs();
   }
 
+  // Close modal and refresh UI IMMEDIATELY — everything is already in localStorage
   renderStats();closeNumModal();rebuildCard(ri,declineHappened);
   toast(anyCall&&anyFlag?'Call logged + number flagged':anyCall?'Call logged ✓':'Number flagged','success');
+
+  // Fire all network calls in the background (not awaited)
+  writeSheet(updates);
+  bgTasks.forEach(task=>{try{task();}catch(e){console.error('bg task error',e);}});
 }
 
 // GENERAL LOG MODAL
@@ -976,17 +1050,17 @@ async function strikethrough(ri,phoneColIndex,badPhone){
 function showEOD(){
   const all=allLogsForDate();
   const calledLogs=all.filter(l=>l.called);
-  const appDials=calledLogs.length;
-  // Bank reached = called at least 1 number regardless of outcome
-  // CEO definition: banks reached = a human answered (who is not NO CONTACT)
-  const banksReached=new Set(calledLogs.filter(l=>l.who&&l.who!=='NO CONTACT').map(l=>l.ri)).size;
-  const peopleReached=new Set(calledLogs.filter(l=>l.who&&l.who!=='NO CONTACT').map(l=>l.ri+'_'+l.role)).size;
+  const appDials=calledLogs.reduce((acc,l)=>acc+(l.dialCount||1),0);
+  // CEO definition: reached = an actual contact answered (EA, CEO, CFO, CRA) — NOT GK or NO CONTACT
+  const REACHED_WHO=['EA','CEO','CFO','CRA'];
+  const banksReached=new Set(calledLogs.filter(l=>REACHED_WHO.includes(l.who)).map(l=>l.ri)).size;
+  const peopleReached=new Set(calledLogs.filter(l=>REACHED_WHO.includes(l.who)).map(l=>l.ri+'_'+l.role)).size;
 
   // Connects — banks where real person reached, priority: Expressed Interest > Left Message > Check Back Later > No Answer
   const PRIORITY=['Expressed Interest','Email requested/ Follow-up','Follow-up','Left Message','Check Back Later','No Answer'];
   // Connects = banks where someone actually answered (not NO CONTACT)
   const connectMap={};
-  calledLogs.filter(l=>l.who&&l.who!=='NO CONTACT').forEach(l=>{
+  calledLogs.filter(l=>REACHED_WHO.includes(l.who)).forEach(l=>{
     const key=l.ri;
     if(!connectMap[key]||PRIORITY.indexOf(l.outcome)<PRIORITY.indexOf(connectMap[key].outcome)){
       const b=banks.find(x=>x.ri===l.ri);
@@ -1036,7 +1110,7 @@ function showEOD(){
     t+='Appointment based on DM reached | '+apptDM+'\n';
     t+='Appointment based on Dials | '+apptDials+'\n';
     t+='Total Banks Reached | '+banksReached+'\n';
-    t+='\nToday I reached '+peopleReached+' GK/EA/CRA/CFO/CEO\n\n';
+    t+='\nToday I reached '+peopleReached+' EA/CRA/CFO/CEO\n\n';
     connects.forEach(c=>{
       const note=c.note.replace(/\.+$/,'').trim();
       t+='Row '+c.row+' — '+c.bank+' — '+note+'.\n';
@@ -1120,6 +1194,8 @@ function loadFlags(){try{return JSON.parse(localStorage.getItem(FLAGS_KEY))||{};
 function saveFlags(){localStorage.setItem(FLAGS_KEY,JSON.stringify(flags));}
 function loadCalls(){try{return JSON.parse(localStorage.getItem(CALLS_KEY))||{};}catch{return{};}}
 function saveCalls(){localStorage.setItem(CALLS_KEY,JSON.stringify(calls));}
+function loadCallMeta(){try{return JSON.parse(localStorage.getItem(CALLMETA_KEY))||{};}catch{return{};}}
+function saveCallMeta(){localStorage.setItem(CALLMETA_KEY,JSON.stringify(callMeta));}
 
 function el(id){return document.getElementById(id);}
 function gv(id){return el(id)?.value||'';}
