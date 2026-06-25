@@ -231,11 +231,12 @@ function mostRecentEmail(d,role){
 
 function renderStats(){
   const all=allLogsForDate();
-  // Dials = total numbers marked Called across all logs today
-  const dials=allLogsForDate().reduce((acc,l)=>acc+(l.dialCount||1),0);
-  // Bank reached = called at least 1 number regardless of outcome or who answered
-  const banksReached=new Set(all.filter(l=>l.called).map(l=>l.ri)).size;
-  const peopleReached=new Set(all.filter(l=>l.called&&l.who&&l.who!=='NO CONTACT').map(l=>l.ri+'_'+l.role)).size;
+  const dials=all.reduce((acc,l)=>acc+(l.dialCount||0),0);
+  // Bank reached = a real person answered (who not NO CONTACT), GK included
+  const banksReached=new Set(all.filter(l=>l.called&&l.who&&l.who!=='NO CONTACT').map(l=>l.ri)).size;
+  // People reached = decision makers only (EA/CEO/CRA/CFO)
+  const DM=['EA','CEO','CFO','CRA'];
+  const peopleReached=new Set(all.filter(l=>l.called&&DM.includes(l.who)).map(l=>l.ri+'_'+l.role)).size;
   const completeCnt=banks.filter(b=>bankComplete(b.ri)).length;
   const sosCnt=Object.values(flags).filter(f=>!f.undone).length;
   const decToday=new Set(all.filter(l=>l.outcome==='Decline').map(l=>l.ri)).size;
@@ -484,7 +485,7 @@ function buildLeadCard(ri,d,role,bankDeclined){
       const bad=isPhoneBad(ri,role,ph),reason=bad?getBadReason(ri,role,ph):'',cnt=getCallCount(ri,role,ph);
       const base=phoneBase(ph),sfx=phoneSuffix(ph);
       return '<div class="phone-row"><div class="phone-info">'
-        +'<span class="phone-num'+(bad?' bad':'')+'" onclick="copyPhone(\''+esc(base)+'\',this)" title="Click to copy">'+esc(base)+'</span>'
+        +'<span class="phone-num'+(bad?' bad':'')+(bad&&flags[getFlagKey(ri,role,ph)]?.scope==='sheet'?' struck':'')+'" onclick="copyPhone(\''+esc(base)+'\',this)" title="Click to copy">'+esc(base)+'</span>'
         +(sfx?'<span class="phone-suffix">'+esc(sfx)+'</span>':'')
         +(bad?'<span class="bad-reason">'+esc(reason)+'</span>':'')
         +(cnt>0?'<span class="call-cnt">'+cnt+'x</span>':'')+'</div>'
@@ -527,80 +528,76 @@ function buildLeadCard(ri,d,role,bankDeclined){
 function openNumModal(ri,role){
   const b=banks.find(x=>x.ri===ri);if(!b)return;
   const d=b.d,rc=RC[role],phones=parsePhones(d[rc.phone]);
-  numCtx={ri,role};
+  numCtx={ri,role,phones};
   st('nm-title',d[C.BANK]+' — '+role+': '+(d[rc.name]||'—'));
   const regStr=d[C.REG]?d[C.REG]:'';
   const aaStr=d[C.AA]?' · AA: '+d[C.AA]:'';
   const initStr=d[rc.init]?' · Email sent: '+fmtSheetDate(d[rc.init]):'';
   st('nm-sub','Row '+ri+' · '+regStr+aaStr+initStr);
 
-  // Build per-number sections
   let html='';
   if(!phones.length){
     html='<div class="warn-box">No phone numbers on file for this lead.</div>';
-  }else{
-    phones.forEach((ph,pi)=>{
-      const bad=isPhoneBad(ri,role,ph),reason=bad?getBadReason(ri,role,ph):'';
-      const nbase=phoneBase(ph),nsfx=phoneSuffix(ph);
-      html+='<div class="num-section" id="ns-'+pi+'">';
-      html+='<div class="num-section-header">';
-      html+='<span class="num-ph'+(bad?' bad':'')+'">'+(bad?'<s>':'')+esc(nbase)+(bad?'</s>':'')+(nsfx?' <span class="num-suffix-display">'+esc(nsfx)+'</span>':'')+' '+(bad?'<span class="bad-reason">'+esc(reason)+'</span>':'')+'</span>';
-      html+='<div class="called-toggle"><button class="toggle-btn called-yes" id="cal-yes-'+pi+'" onclick="setCalledState('+pi+',true)">Called</button><button class="toggle-btn called-no active" id="cal-no-'+pi+'" onclick="setCalledState('+pi+',false)">Not called</button></div>';
-      html+='</div>';
-      // Called section (hidden by default)
-      html+='<div id="called-form-'+pi+'" class="called-form hidden">';
-      html+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:6px 9px;background:var(--surface3);border-radius:7px">';
-      html+='<input type="checkbox" id="nm-has-disp-'+pi+'" checked style="width:15px;height:15px" onchange="toggleDispForm('+pi+')"/>';
-      html+='<label for="nm-has-disp-'+pi+'" style="font-size:12px;color:var(--text2);cursor:pointer">Log outcome and notes for this number</label>';
-      html+='</div>';
-      html+='<div id="disp-form-'+pi+'">';
-      html+='<div class="form-grid">';
-      html+='<div class="form-group"><label>Who answered</label><select id="nm-who-'+pi+'"><option value="NO CONTACT">NO CONTACT</option><option value="GK">GK</option><option value="EA">EA</option><option value="CEO">CEO</option><option value="CRA">CRA</option><option value="CFO">CFO</option></select></div>';
-      html+='<div class="form-group"><label>Outcome</label><select id="nm-outcome-'+pi+'" onchange="checkDeclineWarn('+pi+')"><option>No Answer</option><option>Left Message</option><option>Check Back Later</option><option>Expressed Interest</option><option>Follow-up</option><option>Email requested/ Follow-up</option><option>Decline</option><option>Wrong Contact</option><option>Wrong Number</option><option>Not the bank\'s fund type</option><option>Open</option><option>Request To Unsubscribe</option></select></div>';
-      html+='<div class="form-group"><label>Spoke to</label><input type="text" id="nm-spoke-'+pi+'" placeholder="Name, title"/></div>';
-      html+='<div class="form-group"><label>New number</label><input type="text" id="nm-newnum-'+pi+'" placeholder="e.g. 806-771-3227"/></div>';
-      html+='</div>';
-      html+='<div class="form-group"><label>Notes</label><textarea id="nm-notes-'+pi+'" rows="2" placeholder="What happened?"></textarea></div>';
-      html+='<div id="nm-decline-warn-'+pi+'" class="warn-box hidden">Decline will stop ALL calling at this bank.</div>';
-      html+='</div>';
-      html+='<div class="form-group"><label>Is this number bad?</label><select id="nm-flag-'+pi+'"><option value="">— number is fine</option>';
-      FLAG_OPTIONS.forEach(f=>{html+='<option>'+f+'</option>';});
-      html+='</select></div>';
-      html+='</div>';
-      // Not called section (shown by default)
-      html+='<div id="notcalled-form-'+pi+'" class="notcalled-form">';
-      html+='<div class="warn-info">Date and times called will not be updated.</div>';
-      html+='<div class="form-group"><label>Is this number bad?</label><select id="nm-flagonly-'+pi+'"><option value="">— not flagging</option>';
-      FLAG_OPTIONS.forEach(f=>{html+='<option>'+f+'</option>';});
-      html+='</select></div>';
-      html+='</div>';
-      html+='</div>';
-    });
+    html+='<div class="modal-actions" style="margin-top:14px"><button class="btn-cancel" onclick="closeNumModal()">Close</button></div>';
+    el('nm-body').innerHTML=html;el('num-modal').classList.remove('hidden');return;
   }
 
-  // Detect if any number is shared with other roles
+  // ── SECTION 1: pick which number you are logging ──
+  html+='<div class="form-group"><label>Which number did you call?</label><select id="nm-pick">';
+  phones.forEach((ph,pi)=>{
+    const bad=isPhoneBad(ri,role,ph);
+    html+='<option value="'+pi+'">'+esc(phoneBase(ph))+(phoneSuffix(ph)?' '+esc(phoneSuffix(ph)):'')+(bad?' (flagged)':'')+'</option>';
+  });
+  html+='</select></div>';
+
+  // ── SECTION 2: ONE who, ONE outcome, ONE note ──
+  html+='<div class="form-grid">';
+  html+='<div class="form-group"><label>Who answered</label><select id="nm-who"><option value="NO CONTACT">NO CONTACT</option><option value="GK">GK</option><option value="EA">EA</option><option value="CEO">CEO</option><option value="CRA">CRA</option><option value="CFO">CFO</option></select></div>';
+  html+='<div class="form-group"><label>Outcome</label><select id="nm-outcome" onchange="checkDeclineWarnSingle()"><option>No Answer</option><option>Left Message</option><option>Check Back Later</option><option>Expressed Interest</option><option>Follow-up</option><option>Email requested/ Follow-up</option><option>Decline</option><option>Wrong Contact</option><option>Wrong Number</option><option>Not the bank\'s fund type</option><option>Open</option><option>Request To Unsubscribe</option></select></div>';
+  html+='<div class="form-group"><label>Spoke to</label><input type="text" id="nm-spoke" placeholder="Name, title"/></div>';
+  html+='<div class="form-group"><label>New number</label><input type="text" id="nm-newnum" placeholder="e.g. 806.771.3227"/></div>';
+  html+='</div>';
+  html+='<div class="form-group"><label>Notes</label><textarea id="nm-notes" rows="2" placeholder="What happened?"></textarea></div>';
+  html+='<div id="nm-decline-warn" class="warn-box hidden">Decline will stop ALL calling at this bank.</div>';
+
+  // ── SECTION 3: flag this number (app-only or sheet) ──
+  html+='<div class="num-section" style="margin-top:6px"><div style="padding:10px">';
+  html+='<div class="form-group" style="margin-bottom:8px"><label>Flag this number as bad?</label><select id="nm-flag"><option value="">— number is fine</option>';
+  FLAG_OPTIONS.forEach(f=>{html+='<option>'+f+'</option>';});
+  html+='</select></div>';
+  html+='<div style="display:flex;gap:14px;font-size:12px;color:var(--text2)">';
+  html+='<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="nm-flagscope" value="app" checked style="width:14px;height:14px"/> App only (red, still copyable)</label>';
+  html+='<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="nm-flagscope" value="sheet" style="width:14px;height:14px"/> App + strike on sheet</label>';
+  html+='</div></div></div>';
+
+  // ── SECTION 4: quick-dial other numbers (no contact) ──
+  if(phones.length>1){
+    html+='<div class="num-section" style="margin-top:6px"><div style="padding:10px">';
+    html+='<div style="font-size:11px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Also dialed (no contact) — counts as a dial only</div>';
+    phones.forEach((ph,pi)=>{
+      html+='<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2);padding:4px 0;cursor:pointer"><input type="checkbox" class="nm-quickdial" data-pi="'+pi+'" style="width:15px;height:15px"/> '+esc(phoneBase(ph))+'</label>';
+    });
+    html+='</div></div>';
+  }
+
+  // Shared number notice
   const otherRoles=['CEO','CRA','CFO'].filter(r=>r!==role);
   const sharedNums={};
   phones.forEach(ph=>{
     const digits=phoneDigits(ph);
     otherRoles.forEach(r=>{
       const otherPhones=parsePhones(d[RC[r].phone]);
-      if(otherPhones.some(op=>phoneDigits(op)===digits)){
-        if(!sharedNums[ph])sharedNums[ph]=[];
-        sharedNums[ph].push(r);
-      }
+      if(otherPhones.some(op=>phoneDigits(op)===digits)){if(!sharedNums[ph])sharedNums[ph]=[];sharedNums[ph].push(r);}
     });
   });
   if(Object.keys(sharedNums).length){
-    html+='<div class="shared-num-notice"><strong>Shared numbers detected:</strong><br>';
-    Object.entries(sharedNums).forEach(([ph,roles])=>{
-      html+=esc(ph)+' is also listed for '+roles.join(', ')+'. Flagging here will flag all roles.<br>';
-    });
+    html+='<div class="shared-num-notice"><strong>Shared numbers:</strong><br>';
+    Object.entries(sharedNums).forEach(([ph,roles])=>{html+=esc(phoneBase(ph))+' is also listed for '+roles.join(', ')+'.<br>';});
     html+='</div>';
   }
 
-  // Last 2 notes
-  const existingNotes=String(banks.find(x=>x.ri===ri)?.d[RC[role].notes]||'');
+  // Recent notes
+  const existingNotes=String(d[rc.notes]||'');
   if(existingNotes.trim()){
     const noteLines=existingNotes.trim().split('\n').slice(-3);
     html+='<div class="modal-notes-preview"><div class="mnp-label">Recent notes</div><div class="mnp-text">'+esc(noteLines.join('\n'))+'</div></div>';
@@ -609,6 +606,11 @@ function openNumModal(ri,role){
   html+='<div class="modal-actions" style="margin-top:14px"><button class="btn-primary" onclick="saveNumModal()">Save</button><button class="btn-cancel" onclick="closeNumModal()">Cancel</button></div>';
   el('nm-body').innerHTML=html;
   el('num-modal').classList.remove('hidden');
+}
+
+function checkDeclineWarnSingle(){
+  const o=el('nm-outcome')?.value||'';
+  el('nm-decline-warn')?.classList.toggle('hidden',o!=='Decline');
 }
 
 function promptEmailLog(ri,role){
@@ -638,211 +640,146 @@ function closeNumModal(){el('num-modal').classList.add('hidden');numCtx=null;}
 
 async function saveNumModal(){
   if(!numCtx)return;
-  const {ri,role}=numCtx;
+  const {ri,role,phones}=numCtx;
   const b=banks.find(x=>x.ri===ri),d=b.d,rc=RC[role];
-  const phones=parsePhones(d[rc.phone]);
   const dateStr=workDateDisplay();
   const existingNotes=String(d[rc.notes]||'');
   const dateInNotes=existingNotes.includes(dateStr);
 
-  let noteLines=[];
-  let anyCall=false,anyFlag=false;
-  let lastWho='',lastOutcome='',lastSpoke='',lastNewNum='',lastNotesTxt='',lastPhone='';
-  let declineHappened=false;
+  const pi=parseInt(el('nm-pick')?.value||'0');
+  const ph=phones[pi]||'';
+  const who=el('nm-who')?.value||'NO CONTACT';
+  const outcome=el('nm-outcome')?.value||'No Answer';
+  const spoke=el('nm-spoke')?.value.trim()||'';
+  const newNum=el('nm-newnum')?.value.trim()||'';
+  const notesTxt=el('nm-notes')?.value.trim()||'';
+  const flagIssue=el('nm-flag')?.value||'';
+  const flagScope=document.querySelector('input[name="nm-flagscope"]:checked')?.value||'app';
 
-  // Track all called numbers and their outcomes for best-outcome logic
-  const calledNumbers=[];
-  const bgTasks=[]; // network calls to fire after modal closes
-  const pendingFlagPrompts=[]; // 2x/7x flags awaiting user confirmation
+  const bgTasks=[];
+  const pendingFlagPrompts=[];
 
-  for(let pi=0;pi<phones.length;pi++){
-    const ph=phones[pi];
-    const calledYes=el('cal-yes-'+pi)?.classList.contains('active');
+  // Count quick-dials (other numbers dialed, no contact)
+  const quickDials=[];
+  document.querySelectorAll('.nm-quickdial:checked').forEach(cb=>{
+    const qpi=parseInt(cb.getAttribute('data-pi'));
+    if(qpi!==pi)quickDials.push(phones[qpi]);
+  });
 
-    if(calledYes){
-      anyCall=true;
-      const hasDisp=el('nm-has-disp-'+pi)?.checked!==false;
-      const who=hasDisp?(el('nm-who-'+pi)?.value||'NO CONTACT'):'NO CONTACT';
-      const outcome=hasDisp?(el('nm-outcome-'+pi)?.value||'No Answer'):'No Answer';
-      const spoke=hasDisp?(el('nm-spoke-'+pi)?.value.trim()||''):'';
-      const newNum=el('nm-newnum-'+pi)?.value.trim()||'';
-      const notesTxt=hasDisp?(el('nm-notes-'+pi)?.value.trim()||''):'';
-      const flagIssue=el('nm-flag-'+pi)?.value||'';
+  const declineHappened=(outcome==='Decline');
 
-      calledNumbers.push({ph,who,outcome,spoke,newNum,notesTxt,flagIssue,hasDisp});
-      lastPhone=ph;
-      if(outcome==='Decline')declineHappened=true;
+  // ── Build the note (only if there is real content) ──
+  const noteLines=[];
+  const parts=[];
+  if(notesTxt)parts.push(notesTxt);
+  if(spoke)parts.push('Spoke to: '+spoke);
+  if(parts.length)noteLines.push(parts.join('. ')+'.');
+  if(newNum)noteLines.push('New number: '+newNum+'.');
 
-      // Build note line only if there is something to note
-      if(hasDisp){
-        const parts=[];
-        if(notesTxt)parts.push(notesTxt);
-        if(spoke)parts.push('Spoke to: '+spoke);
-        if(flagIssue)parts.push(ph+' '+flagIssue);
-        if(parts.length)noteLines.push(parts.join('. ')+'.');
-        // New number goes on its OWN line — never beside a flag keyword
-        if(newNum)noteLines.push('New number: '+newNum+'.');
-      }
+  // ── Dial counting: 1 for the main call + each quick-dial ──
+  const cKey=bankId(ri)+'__'+role+'__'+ph;
+  calls[cKey]=(calls[cKey]||0)+1;
+  let dialCount=1;
+  quickDials.forEach(qph=>{
+    const qKey=bankId(ri)+'__'+role+'__'+qph;
+    calls[qKey]=(calls[qKey]||0)+1;
+    dialCount++;
+  });
 
-      // Update call counter — each number called = 1 dial
-      const cKey=bankId(ri)+'__'+role+'__'+ph;
-      calls[cKey]=(calls[cKey]||0)+1;
+  // ── 2x/7x tracking on the main number ──
+  const naKey=cKey+'__na', atKey=cKey+'__at';
+  if(outcome==='No Answer')callMeta[naKey]=(callMeta[naKey]||0)+1;
+  if(['Left Message','Follow-up','Email requested/ Follow-up','Check Back Later'].includes(outcome))callMeta[atKey]=(callMeta[atKey]||0)+1;
+  if((callMeta[naKey]||0)>=2&&!flags[getFlagKey(ri,role,ph)])pendingFlagPrompts.push({ri,role,ph,issue:'2x no answer'});
+  if((callMeta[atKey]||0)>=7&&!flags[getFlagKey(ri,role,ph)])pendingFlagPrompts.push({ri,role,ph,issue:'7x attempted'});
 
-      // Track no-answer and attempted counts for 2x/7x rule
-      if(hasDisp){
-        const naKey=cKey+'__na', atKey=cKey+'__at';
-        if(outcome==='No Answer'){callMeta[naKey]=(callMeta[naKey]||0)+1;}
-        if(['Left Message','Follow-up','Email requested/ Follow-up','Check Back Later'].includes(outcome)){callMeta[atKey]=(callMeta[atKey]||0)+1;}
-        // Queue a confirmation prompt at 2x no answer (don't auto-flag)
-        if((callMeta[naKey]||0)>=2&&!flags[getFlagKey(ri,role,ph)]){
-          pendingFlagPrompts.push({ri,role,ph,issue:'2x no answer',phones});
-        }
-        // Queue a confirmation prompt at 7x attempted
-        if((callMeta[atKey]||0)>=7&&!flags[getFlagKey(ri,role,ph)]){
-          pendingFlagPrompts.push({ri,role,ph,issue:'7x attempted',phones});
-        }
-      }
-
-      // Save flag if issue selected
-      if(flagIssue){
-        anyFlag=true;
-        flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:flagIssue,undone:false,called:true,date:workDate};
-        bgTasks.push(()=>strikethrough(ri,rc.phone,ph));
-        bgTasks.push(()=>writeContactUpdate(ri,role,ph,flagIssue,d,phones));
-        // Auto-flag same number on other roles if shared
-        const digits=phoneDigits(ph);
-        for(const otherRole of['CEO','CRA','CFO'].filter(r=>r!==role)){
-          const orc=RC[otherRole];
-          const otherPhones=parsePhones(d[orc.phone]);
-          const matchPh=otherPhones.find(op=>phoneDigits(op)===digits);
-          if(matchPh){
-            flags[getFlagKey(ri,otherRole,matchPh)]={ri,role:otherRole,phone:matchPh,issue:flagIssue,undone:false,called:false,sharedFrom:role,date:workDate};
-            bgTasks.push(()=>strikethrough(ri,orc.phone,matchPh));
-          }
-        }
-      }
-
-      if(newNum){
-        // Add new number — never inherit flags from other numbers
-        d[rc.phone]=d[rc.phone]?d[rc.phone]+'; '+newNum:newNum;
-      }
-    } else {
-      // Not called — flag only
-      const flagIssue=el('nm-flagonly-'+pi)?.value||'';
-      if(flagIssue){
-        anyFlag=true;
-        flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:flagIssue,undone:false,called:false,date:workDate};
-        noteLines.push(ph+' '+flagIssue+'.');
-        bgTasks.push(()=>strikethrough(ri,rc.phone,ph));
-        bgTasks.push(()=>writeContactUpdate(ri,role,ph,flagIssue,d,phones));
+  // ── Flag handling (app-only or sheet) ──
+  if(flagIssue){
+    flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:flagIssue,undone:false,called:true,date:workDate,scope:flagScope};
+    if(flagScope==='sheet'){
+      bgTasks.push(()=>strikethrough(ri,rc.phone,ph));
+      bgTasks.push(()=>writeContactUpdate(ri,role,ph,flagIssue,d,phones));
+    }
+    // Shared numbers across roles
+    const digits=phoneDigits(ph);
+    for(const otherRole of ['CEO','CRA','CFO'].filter(r=>r!==role)){
+      const orc=RC[otherRole];
+      const matchPh=parsePhones(d[orc.phone]).find(op=>phoneDigits(op)===digits);
+      if(matchPh){
+        flags[getFlagKey(ri,otherRole,matchPh)]={ri,role:otherRole,phone:matchPh,issue:flagIssue,undone:false,called:false,sharedFrom:role,date:workDate,scope:flagScope};
+        if(flagScope==='sheet')bgTasks.push(()=>strikethrough(ri,orc.phone,matchPh));
       }
     }
   }
 
-  // Determine best outcome from all called numbers (sheet gets this)
-  const OUTCOME_PRIORITY=['Expressed Interest','Email requested/ Follow-up','Follow-up','Left Message','Check Back Later','Decline','Wrong Contact','Wrong Number',"Not the bank's fund type",'Open','Request To Unsubscribe','No Answer'];
-  const REACHED=['EA','CEO','CFO','CRA'];
-  if(calledNumbers.length){
-    const withDisp=calledNumbers.filter(c=>c.hasDisp);
-    const pool=withDisp.length?withDisp:calledNumbers;
-    // Prefer entries where an actual person answered, then by outcome priority
-    const best=pool.slice().sort((a,b)=>{
-      const aReached=REACHED.includes(a.who)?0:1;
-      const bReached=REACHED.includes(b.who)?0:1;
-      if(aReached!==bReached)return aReached-bReached;
-      return OUTCOME_PRIORITY.indexOf(a.outcome)-OUTCOME_PRIORITY.indexOf(b.outcome);
-    })[0];
-    lastWho=best.who;lastOutcome=best.outcome;lastSpoke=best.spoke;lastNewNum=best.newNum;lastNotesTxt=best.notesTxt;
-  }
+  // ── Add new number to phone cell ──
+  if(newNum)d[rc.phone]=d[rc.phone]?d[rc.phone]+'; '+newNum:newNum;
 
-  if(!anyCall&&!anyFlag){toast('Nothing to save — select called or flag a number','error');return;}
-
-  // Check if any called number was previously flagged and outcome is not bad
-  const BAD_OUTCOMES=['No Answer'];
-  for(let pi=0;pi<phones.length;pi++){
-    const ph=phones[pi];
-    const calledYes=el('cal-yes-'+pi)?.classList.contains('active');
-    if(!calledYes)continue;
-    const outcome=el('nm-outcome-'+pi)?.value||'';
-    const fKey=getFlagKey(ri,role,ph);
-    if(flags[fKey]&&!flags[fKey].undone&&!BAD_OUTCOMES.includes(outcome)){
-      // Number was flagged but now connected — ask user
-      if(confirm('The number '+ph+' was previously flagged as bad but you just logged a successful call on it. Remove the flag and note that it connected?')){
-        flags[fKey].undone=true;
-        // Add note that number connected
-        const dateStr=workDateDisplay();
-        const existingN=String(d[rc.notes]||'');
-        const dateInN=existingN.includes(dateStr);
-        const connNote=dateInN?(ph+' connected.'):(dateStr+'\n'+ph+' connected.');
-        d[rc.notes]=existingN?(existingN+'\n'+connNote):connNote;
-        // Remove strikethrough in sheet (background)
+  // ── If a previously flagged number now connected, offer to clear ──
+  const fKey=getFlagKey(ri,role,ph);
+  if(flags[fKey]&&!flags[fKey].undone&&!flagIssue&&outcome!=='No Answer'&&who!=='NO CONTACT'){
+    if(confirm(phoneBase(ph)+' was flagged but you just connected. Remove the flag?')){
+      const wasScope=flags[fKey].scope;
+      flags[fKey].undone=true;
+      const connNote=dateInNotes?(phoneBase(ph)+' connected.'):(dateStr+'\n'+phoneBase(ph)+' connected.');
+      d[rc.notes]=existingNotes?(existingNotes+'\n'+connNote):connNote;
+      if(wasScope==='sheet'){
         bgTasks.push(()=>fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:rc.phone,phone:ph})}));
       }
     }
   }
 
-  // Save snapshot before update
+  // ── Snapshot for undo ──
   const before={recent:d[rc.recent]||'',times:String(parseInt(d[rc.times])||0),outcome:d[rc.outcome]||'',who:d[rc.who]||'',notes:existingNotes};
 
-  // Build full note entry
+  // ── Write note to notes cell ──
   let noteEntry='';
   if(noteLines.length){
     noteEntry=dateInNotes?noteLines.join('\n'):(dateStr+'\n'+noteLines.join('\n'));
-    d[rc.notes]=existingNotes?existingNotes+'\n'+noteEntry:noteEntry;
+    d[rc.notes]=String(d[rc.notes]||'')?String(d[rc.notes])+'\n'+noteEntry:noteEntry;
   }
 
-  if(anyCall){
-    d[rc.recent]=dateStr;
-    d[rc.times]=String((parseInt(d[rc.times])||0)+1);
-    if(lastOutcome)d[rc.outcome]=lastOutcome;
-    if(lastWho)d[rc.who]=lastWho;
-  }
+  // ── Update lead columns (the ONE who, ONE outcome) ──
+  d[rc.recent]=dateStr;
+  d[rc.times]=String((parseInt(d[rc.times])||0)+1);
+  d[rc.outcome]=outcome;
+  d[rc.who]=who;
 
-  // Save log entry
-  const logEntry={id:genId(),ri,role,who:lastWho||'NO CONTACT',outcome:lastOutcome||'',noteEntry,noteText:noteLines.join(' '),notesTxt:lastNotesTxt||'',spokeTo:lastSpoke||'',newNum:lastNewNum||'',phone:lastPhone||'',called:anyCall,dialCount:calledNumbers.length,date:workDate,before,deleted:false};
+  // ── Save the log entry — who and outcome exactly as selected ──
+  const logEntry={id:genId(),ri,role,who,outcome,noteEntry,noteText:noteLines.join(' '),notesTxt,spokeTo:spoke,newNum,phone:ph,called:true,dialCount,date:workDate,before,deleted:false};
   const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(logEntry);
   saveLogs();saveFlags();saveCalls();saveCallMeta();
 
-  // Write to sheet (background — don't block modal close)
-  const updates=[{row:ri,col:rc.notes,value:d[rc.notes]||''}];
-  if(anyCall){
-    updates.push({row:ri,col:rc.recent,value:d[rc.recent]});
-    updates.push({row:ri,col:rc.times,value:d[rc.times]});
-    updates.push({row:ri,col:rc.outcome,value:d[rc.outcome]});
-    updates.push({row:ri,col:rc.who,value:d[rc.who]});
-    if(lastNewNum)updates.push({row:ri,col:rc.phone,value:d[rc.phone]});
-  }
+  // ── Sheet write (background) ──
+  const updates=[
+    {row:ri,col:rc.notes,value:d[rc.notes]||''},
+    {row:ri,col:rc.recent,value:d[rc.recent]},
+    {row:ri,col:rc.times,value:d[rc.times]},
+    {row:ri,col:rc.outcome,value:d[rc.outcome]},
+    {row:ri,col:rc.who,value:d[rc.who]}
+  ];
+  if(newNum)updates.push({row:ri,col:rc.phone,value:d[rc.phone]});
 
-  if(declineHappened){
-    const decLog={id:genId(),ri,role,who:lastWho,outcome:'Decline',noteEntry:'',noteText:'Decline',called:true,date:workDate,before:{},deleted:false,isDecline:true};
-    if(!logs[key])logs[key]=[];logs[key].push(decLog);saveLogs();
-  }
-
-  // Close modal and refresh UI IMMEDIATELY — everything is already in localStorage
+  // Close + refresh immediately
   renderStats();closeNumModal();rebuildCard(ri,declineHappened);
-  toast(anyCall&&anyFlag?'Call logged + number flagged':anyCall?'Call logged ✓':'Number flagged','success');
+  toast(who!=='NO CONTACT'?'Logged — '+who+' reached':'Logged','success');
 
-  // Fire all network calls in the background (not awaited)
+  // Background network
   writeSheet(updates);
-  bgTasks.forEach(task=>{try{task();}catch(e){console.error('bg task error',e);}});
+  bgTasks.forEach(t=>{try{t();}catch(e){console.error(e);}});
 
-  // Now ask about any 2x/7x flags — user decides
+  // 2x/7x prompts
   pendingFlagPrompts.forEach(p=>{
     setTimeout(()=>{
-      if(confirm(p.ph+' has reached '+p.issue+' for '+p.role+'. Flag this number as bad?')){
-        flags[getFlagKey(p.ri,p.role,p.ph)]={ri:p.ri,role:p.role,phone:p.ph,issue:p.issue,undone:false,called:true,date:workDate,auto:true};
-        saveFlags();
-        const bb=banks.find(x=>x.ri===p.ri);
-        if(bb){strikethrough(p.ri,RC[p.role].phone,p.ph);writeContactUpdate(p.ri,p.role,p.ph,p.issue,bb.d,p.phones);}
-        rebuildCard(p.ri,false);renderStats();
-        toast(p.ph+' flagged','success');
+      if(confirm(phoneBase(p.ph)+' has reached '+p.issue+' for '+p.role+'. Flag this number?')){
+        flags[getFlagKey(p.ri,p.role,p.ph)]={ri:p.ri,role:p.role,phone:p.ph,issue:p.issue,undone:false,called:true,date:workDate,scope:'app',auto:true};
+        saveFlags();rebuildCard(p.ri,false);renderStats();toast(phoneBase(p.ph)+' flagged (app only)','success');
       }
-    },100);
+    },120);
   });
 }
 
-// GENERAL LOG MODAL
 function openGenModal(ri,role){
   genCtx={ri,role};
   const b=banks.find(x=>x.ri===ri);if(!b)return;
@@ -1069,15 +1006,17 @@ function showEOD(){
   const all=allLogsForDate();
   const calledLogs=all.filter(l=>l.called);
   const appDials=calledLogs.reduce((acc,l)=>acc+(l.dialCount||1),0);
-  // CEO definition: reached = an actual contact answered (EA, CEO, CFO, CRA) — NOT GK or NO CONTACT
-  const REACHED_WHO=['EA','CEO','CFO','CRA'];
-  // A log counts as "reached" if a real person answered OR a meaningful (non-no-answer) outcome was logged
-  const MEANINGFUL=['Expressed Interest','Email requested/ Follow-up','Follow-up','Left Message','Check Back Later'];
-  const isReachedLog=(l)=>REACHED_WHO.includes(l.who)||(l.who!=='GK'&&MEANINGFUL.includes(l.outcome));
+  // REACHED RULES (one who per log now):
+  //  - who = NO CONTACT  -> not reached
+  //  - who = anything else (GK included) -> bank reached
+  //  - who = EA/CEO/CRA/CFO -> decision maker reached
+  const DM_WHO=['EA','CEO','CFO','CRA'];
+  const isReachedLog=(l)=>l.who&&l.who!=='NO CONTACT';
+  const isDMLog=(l)=>DM_WHO.includes(l.who);
   const banksReached=new Set(calledLogs.filter(isReachedLog).map(l=>l.ri)).size;
-  const peopleReached=new Set(calledLogs.filter(isReachedLog).map(l=>l.ri+'_'+l.role)).size;
+  const peopleReached=new Set(calledLogs.filter(isDMLog).map(l=>l.ri+'_'+l.role)).size;
 
-  // Connects — banks where real person reached, priority: Expressed Interest > Left Message > Check Back Later > No Answer
+  // Build one connect entry per bank (best outcome wins)
   const PRIORITY=['Expressed Interest','Email requested/ Follow-up','Follow-up','Left Message','Check Back Later','No Answer'];
   const connectMap={};
   calledLogs.filter(isReachedLog).forEach(l=>{
@@ -1085,18 +1024,20 @@ function showEOD(){
     if(!connectMap[key]||PRIORITY.indexOf(l.outcome)<PRIORITY.indexOf(connectMap[key].outcome)){
       const b=banks.find(x=>x.ri===l.ri);
       if(b){
-        // Build clean one-line note — only what was typed, no duplicates
         const parts=[];
         if(l.outcome==='Expressed Interest')parts.push('Appointment scheduled');
         if(l.notesTxt&&l.notesTxt.trim())parts.push(l.notesTxt.trim().replace(/\.+$/,''));
         if(l.spokeTo&&l.spokeTo.trim())parts.push('Spoke to '+l.spokeTo.trim().replace(/\.+$/,''));
         if(l.newNum&&l.newNum.trim())parts.push('New number: '+l.newNum.trim());
         const cleanNote=parts.length?parts.join('. '):l.outcome;
-        connectMap[key]={row:l.ri,bank:b.d[C.BANK],outcome:l.outcome,note:cleanNote};
+        connectMap[key]={row:l.ri,bank:b.d[C.BANK],outcome:l.outcome,note:cleanNote,who:l.who,isDM:DM_WHO.includes(l.who)};
       }
     }
   });
   const connects=Object.values(connectMap);
+  // Split into the two groups — each bank appears in exactly one
+  const dmReached=connects.filter(c=>c.isDM);
+  const gkReached=connects.filter(c=>!c.isDM);
 
   // Declined today
   const declinedToday=[],seenDec=new Set();
@@ -1130,11 +1071,20 @@ function showEOD(){
     t+='Appointment based on DM reached | '+apptDM+'\n';
     t+='Appointment based on Dials | '+apptDials+'\n';
     t+='Total Banks Reached | '+banksReached+'\n';
-    t+='\nToday I reached '+peopleReached+' EA/CRA/CFO/CEO\n\n';
-    connects.forEach(c=>{
-      const note=c.note.replace(/\.+$/,'').trim();
-      t+='Row '+c.row+' — '+c.bank+' — '+note+'.\n';
-    });
+    t+='\n— Decision Makers Reached —\n\n';
+    if(dmReached.length){
+      dmReached.forEach(c=>{
+        const note=c.note.replace(/\.+$/,'').trim();
+        t+='Row '+c.row+' — '+c.bank+' — '+c.who+' — '+note+'.\n';
+      });
+    }else{t+='None\n';}
+    t+='\n— Banks Reached (gatekeeper / other) —\n\n';
+    if(gkReached.length){
+      gkReached.forEach(c=>{
+        const note=c.note.replace(/\.+$/,'').trim();
+        t+='Row '+c.row+' — '+c.bank+' — '+note+'.\n';
+      });
+    }else{t+='None\n';}
     if(declinedToday.length){t+='\nBanks Declined Today\n\n';declinedToday.forEach(x=>{t+='Row '+x.row+' — '+x.bank+' — declined by '+x.role+'\n';});}
     if(Object.keys(sosByBank).length){
       t+='\nFlagged Numbers Report\n\n';
