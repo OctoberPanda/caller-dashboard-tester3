@@ -211,3 +211,7 @@ select option{background:var(--surface2);color:var(--text)}
 .nav-filter-wrap input{flex:1;min-width:140px;font-size:12px}
 .nav-filter-wrap select{font-size:12px;width:auto}
 #goto-input{border-color:var(--blue);background:var(--blue-bg)}
+
+/* HQ Local Phone on bank card */
+.bank-hq{font-size:12px;color:var(--green);background:var(--green-bg);border:0.5px solid var(--green-border);border-radius:var(--radius);padding:4px 10px;display:inline-block;margin-top:5px;cursor:pointer;font-weight:600}
+.bank-hq:hover{opacity:.85}
