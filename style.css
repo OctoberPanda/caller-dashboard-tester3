@@ -215,3 +215,14 @@ select option{background:var(--surface2);color:var(--text)}
 /* HQ Local Phone on bank card */
 .bank-hq{font-size:12px;color:var(--green);background:var(--green-bg);border:0.5px solid var(--green-border);border-radius:var(--radius);padding:4px 10px;display:inline-block;margin-top:5px;cursor:pointer;font-weight:600}
 .bank-hq:hover{opacity:.85}
+
+/* HQ number row with flag controls */
+.bank-hq-wrap{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:5px}
+.bank-hq{font-size:12px;color:var(--green);background:var(--green-bg);border:0.5px solid var(--green-border);border-radius:var(--radius);padding:4px 10px;cursor:pointer;font-weight:600}
+.bank-hq:hover{opacity:.85}
+.bank-hq.hq-flagged{color:var(--red);background:var(--red-bg);border-color:var(--red-border)}
+.hq-btn{font-size:10px;background:var(--surface2);color:var(--text2);border:0.5px solid var(--border);border-radius:6px;padding:3px 8px;cursor:pointer;font-family:inherit}
+.hq-btn:hover{background:var(--surface3)}
+.hq-btn-on{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-border)}
+.hq-btn-flag{background:var(--red-bg);color:var(--red);border-color:var(--red-border)}
+.hq-btn-undo{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-border)}
