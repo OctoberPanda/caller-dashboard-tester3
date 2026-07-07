@@ -18,6 +18,7 @@
     <div class="form-group"><label>Your tab name</label><input type="text" id="s-tab" placeholder="e.g. Leon Outreach Tracker"/></div>
     <div class="form-group"><label>Contact update sheet ID</label><input type="text" id="s-update-id" placeholder="Paste Contact Update Sheet ID"/></div>
     <div class="form-group"><label>Contact update tab name</label><input type="text" id="s-update-tab" placeholder="e.g. LEONS CONTACT UPDATE"/></div>
+    <div class="form-group"><label>Follow-Up tab name</label><input type="text" id="s-followup-tab" placeholder="e.g. Follow-Up Sheet"/></div>
     <div class="form-group"><label>Google API Key</label><input type="text" id="s-api-key" placeholder="Paste your API key"/></div>
     <button class="btn-primary" onclick="saveSetup()">Connect</button>
     <p class="setup-note">Settings saved in your browser only.</p>
@@ -28,7 +29,7 @@
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v11</span>
+      <span class="tester-badge">TESTER v12</span>
       <div class="date-wrap">
         <span class="date-label">Date</span>
         <input type="text" id="work-date" placeholder="M/D/YYYY" onchange="onDateChange()"/>
@@ -38,6 +39,7 @@
     <div class="topbar-right">
       <button class="btn-sm" onclick="clearDayLogs()">🗑 Clear day</button>
       <button class="btn-sm" onclick="loadSheet()">↻ Refresh</button>
+      <button class="btn-sm" id="btn-followup" onclick="toggleFollowupView()">📋 Follow-Ups</button>
       <button class="btn-eod" onclick="showEOD()">End of day report</button>
       <button class="btn-icon" onclick="showSettings()">⚙️</button>
     </div>
@@ -83,6 +85,7 @@
   <div id="bank-view" class="bank-view">
     <div class="loading" id="loading-msg">Loading your sheet...</div>
   </div>
+  <div id="followup-view" class="bank-view hidden"></div>
 </div>
 
 <div id="num-modal" class="modal-overlay hidden">
@@ -188,6 +191,7 @@
       <div class="form-group"><label>Your tab name</label><input type="text" id="set-tab"/></div>
       <div class="form-group"><label>Contact update sheet ID</label><input type="text" id="set-update-id"/></div>
       <div class="form-group"><label>Contact update tab name</label><input type="text" id="set-update-tab"/></div>
+      <div class="form-group"><label>Follow-Up tab name</label><input type="text" id="set-followup-tab"/></div>
       <div class="form-group"><label>Google API Key</label><input type="text" id="set-api-key"/></div>
       <div style="display:flex;gap:8px;margin-top:1rem">
         <button class="btn-primary" onclick="saveSettings()">Save</button>
@@ -198,6 +202,6 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="app11.js"></script>
+<script src="app12.js"></script>
 </body>
 </html>

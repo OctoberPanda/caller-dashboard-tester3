@@ -226,3 +226,16 @@ select option{background:var(--surface2);color:var(--text)}
 .hq-btn-on{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-border)}
 .hq-btn-flag{background:var(--red-bg);color:var(--red);border-color:var(--red-border)}
 .hq-btn-undo{background:var(--amber-bg);color:var(--amber);border-color:var(--amber-border)}
+
+/* FOLLOW-UP VIEW */
+.fu-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;margin-bottom:12px}
+.fu-card.fu-done{border-color:var(--green-border);opacity:.75}
+.fu-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.fu-bank{font-size:16px;font-weight:700;color:var(--text)}
+.fu-person{font-size:13px;color:var(--text2);margin-top:2px}
+.fu-done-tag{font-size:11px;color:var(--green);font-weight:600}
+.fu-meta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.fu-chip{font-size:11px;background:var(--surface2);border:0.5px solid var(--border);border-radius:6px;padding:4px 9px;color:var(--text2);cursor:default}
+.fu-chip[onclick]{cursor:pointer;color:var(--blue)}
+.fu-chip[onclick]:hover{background:var(--surface3)}
+.fu-notes{font-size:12px;color:var(--card-text2);background:var(--surface2);border:0.5px solid var(--border);border-radius:6px;padding:8px 10px;white-space:pre-wrap;line-height:1.6;max-height:120px;overflow-y:auto;margin-top:6px}
