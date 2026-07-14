@@ -29,7 +29,7 @@
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v18</span>
+      <span class="tester-badge">TESTER v21</span>
       <div class="date-wrap">
         <span class="date-label">Date</span>
         <input type="text" id="work-date" placeholder="M/D/YYYY" onchange="onDateChange()"/>
@@ -67,6 +67,7 @@
         <select id="f-status" onchange="onFilter()">
           <option value="">Main list (active)</option>
           <option value="set-aside">⭐ Set aside (declined / interest / appt)</option>
+          <option value="parked">📂 Parked (moved off main list)</option>
           <option value="called-today">Called today</option>
           <option value="not-called-today">Not called today</option>
           <option value="incomplete">Incomplete</option>
@@ -196,12 +197,14 @@
       <div style="display:flex;gap:8px;margin-top:1rem">
         <button class="btn-primary" onclick="saveSettings()">Save</button>
         <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
+        <button class="btn-sm" onclick="exportBackup()">💾 Backup data</button>
+        <button class="btn-sm" onclick="importBackup()">📥 Restore backup</button>
       </div>
     </div>
   </div>
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="app18.js"></script>
+<script src="app21.js"></script>
 </body>
 </html>
