@@ -19,6 +19,7 @@
     <div class="form-group"><label>Contact update sheet ID</label><input type="text" id="s-update-id" placeholder="Paste Contact Update Sheet ID"/></div>
     <div class="form-group"><label>Contact update tab name</label><input type="text" id="s-update-tab" placeholder="e.g. LEONS CONTACT UPDATE"/></div>
     <div class="form-group"><label>Follow-Up tab name</label><input type="text" id="s-followup-tab" placeholder="e.g. Follow-Up Sheet"/></div>
+    <div class="form-group"><label>Priority tab name</label><input type="text" id="s-priority-tab" placeholder="e.g. Priority Banks"/></div>
     <div class="form-group"><label>Google API Key</label><input type="text" id="s-api-key" placeholder="Paste your API key"/></div>
     <button class="btn-primary" onclick="saveSetup()">Connect</button>
     <p class="setup-note">Settings saved in your browser only.</p>
@@ -29,7 +30,7 @@
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v24</span>
+      <span class="tester-badge">TESTER v26</span>
       <div class="date-wrap">
         <span class="date-label">Date</span>
         <input type="text" id="work-date" placeholder="M/D/YYYY" onchange="onDateChange()"/>
@@ -46,6 +47,7 @@
 
   <div class="stats-bar">
     <div class="stat"><span class="stat-val" id="st-dials">0</span><span class="stat-lbl">Dials</span></div>
+    <div class="stat"><span class="stat-val blue" id="st-bdialed">0</span><span class="stat-lbl">Banks dialed</span></div>
     <div class="stat"><span class="stat-val green" id="st-reached">0</span><span class="stat-lbl">Banks reached</span></div>
     <div class="stat"><span class="stat-val blue" id="st-people">0</span><span class="stat-lbl">People reached</span></div>
     <div class="stat"><span class="stat-val amber" id="st-complete">0</span><span class="stat-lbl">Complete</span></div>
@@ -192,6 +194,7 @@
       <div class="form-group"><label>Contact update sheet ID</label><input type="text" id="set-update-id"/></div>
       <div class="form-group"><label>Contact update tab name</label><input type="text" id="set-update-tab"/></div>
       <div class="form-group"><label>Follow-Up tab name</label><input type="text" id="set-followup-tab"/></div>
+      <div class="form-group"><label>Priority tab name</label><input type="text" id="set-priority-tab"/></div>
       <div class="form-group"><label>Google API Key</label><input type="text" id="set-api-key"/></div>
       <div style="display:flex;gap:8px;margin-top:1rem">
         <button class="btn-primary" onclick="saveSettings()">Save</button>
@@ -204,6 +207,6 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="app24.js"></script>
+<script src="app26.js"></script>
 </body>
 </html>
