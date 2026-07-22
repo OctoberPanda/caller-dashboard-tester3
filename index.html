@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Caller Dashboard — Tester</title>
-<link rel="stylesheet" href="style2.css">
+<link rel="stylesheet" href="style3.css">
 </head>
 <body>
 
@@ -30,7 +30,7 @@
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v30</span>
+      <span class="tester-badge">TESTER v32</span>
       <div class="date-wrap">
         <span class="date-label">Date</span>
         <input type="text" id="work-date" placeholder="M/D/YYYY" onchange="onDateChange()"/>
@@ -62,9 +62,10 @@
     <div class="nav-center">
       <span class="nav-counter" id="nav-counter">Bank 1 of 137</span>
       <div class="nav-filter-wrap">
-        <input type="text" id="goto-input" placeholder="Go to row # or bank name" onkeydown="if(event.key==='Enter')gotoBank()"/>
-        <button class="btn-sm" onclick="gotoBank()">Go</button>
-        <input type="text" id="search" placeholder="🔍 Filter by name..." oninput="onSearch()"/>
+        <div style="position:relative;flex:1">
+          <input type="text" id="search" autocomplete="off" placeholder="🔍 Search bank name or row #" oninput="onSearchLive()" onkeydown="searchKey(event)" onfocus="onSearchLive()"/>
+          <div id="search-dropdown" class="search-dropdown hidden"></div>
+        </div>
         <select id="f-status" onchange="onFilter()">
           <option value="">Main list (active)</option>
           <option value="set-aside">⭐ Set aside (declined / interest / appt)</option>
@@ -207,6 +208,6 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="app30.js"></script>
+<script src="app32.js"></script>
 </body>
 </html>
