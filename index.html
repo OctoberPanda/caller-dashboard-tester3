@@ -30,7 +30,7 @@
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v34</span>
+      <span class="tester-badge">TESTER v35</span>
       <div class="date-wrap">
         <span class="date-label">Date</span>
         <input type="text" id="work-date" placeholder="M/D/YYYY" onchange="onDateChange()"/>
@@ -40,6 +40,7 @@
     <div class="topbar-right">
       <button class="btn-sm" onclick="clearDayLogs()">🗑 Clear day</button>
       <button class="btn-sm" onclick="loadSheet()">↻ Refresh</button>
+      <button class="btn-sm" onclick="showDNEReport()">🚫 Non-existent leads</button>
       <button class="btn-eod" onclick="showEOD()">End of day report</button>
       <button class="btn-icon" onclick="showSettings()">⚙️</button>
     </div>
@@ -166,7 +167,7 @@
 <div id="eod-modal" class="modal-overlay hidden">
   <div class="modal modal-wide">
     <div class="modal-header">
-      <div><div class="modal-title">End of day report</div><div class="modal-sub" id="eod-sub"></div></div>
+      <div><div class="modal-title" id="eod-title">End of day report</div><div class="modal-sub" id="eod-sub"></div></div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn-sm" onclick="copyReport()">📋 Copy</button>
         <button class="modal-close" onclick="closeEOD()">✕</button>
@@ -208,6 +209,6 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="app34.js"></script>
+<script src="app35.js"></script>
 </body>
 </html>
