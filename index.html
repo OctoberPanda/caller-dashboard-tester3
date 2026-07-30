@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Caller Dashboard — Tester</title>
-<link rel="stylesheet" href="style5.css">
+<link rel="stylesheet" href="style6.css">
 </head>
 <body>
 
@@ -30,7 +30,7 @@
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v36</span>
+      <span class="tester-badge">TESTER v37</span>
       <div class="date-wrap">
         <span class="date-label">Date</span>
         <input type="text" id="work-date" placeholder="M/D/YYYY" onchange="onDateChange()"/>
@@ -49,13 +49,14 @@
   <div class="stats-bar">
     <div class="stat"><span class="stat-val" id="st-dials">0</span><span class="stat-lbl">Dials</span></div>
     <div class="stat"><span class="stat-val blue" id="st-bdialed">0</span><span class="stat-lbl">Banks dialed</span></div>
-    <div class="stat"><span class="stat-val green" id="st-reached">0</span><span class="stat-lbl">Banks reached</span></div>
-    <div class="stat"><span class="stat-val blue" id="st-people">0</span><span class="stat-lbl">People reached</span></div>
-    <div class="stat"><span class="stat-val amber" id="st-complete">0</span><span class="stat-lbl">Complete</span></div>
-    <div class="stat"><span class="stat-val green" id="st-appt">0</span><span class="stat-lbl">Appointments</span></div>
-    <div class="stat"><span class="stat-val red" id="st-sos">0</span><span class="stat-lbl">SOS</span></div>
-    <div class="stat"><span class="stat-val red" id="st-declined">0</span><span class="stat-lbl">Declined</span></div>
-    <div class="stat"><span class="stat-val" id="st-total">0</span><span class="stat-lbl">Active</span></div>
+    <div class="stat stat-more" id="st-extra-reached"><span class="stat-val green" id="st-reached">0</span><span class="stat-lbl">Banks reached</span></div>
+    <div class="stat stat-more"><span class="stat-val blue" id="st-people">0</span><span class="stat-lbl">People reached</span></div>
+    <div class="stat stat-more"><span class="stat-val amber" id="st-complete">0</span><span class="stat-lbl">Complete</span></div>
+    <div class="stat stat-more"><span class="stat-val green" id="st-appt">0</span><span class="stat-lbl">Appointments</span></div>
+    <div class="stat stat-more"><span class="stat-val red" id="st-sos">0</span><span class="stat-lbl">SOS</span></div>
+    <div class="stat stat-more"><span class="stat-val red" id="st-declined">0</span><span class="stat-lbl">Declined</span></div>
+    <div class="stat stat-more"><span class="stat-val" id="st-total">0</span><span class="stat-lbl">Active</span></div>
+    <button class="stat-toggle" id="stat-toggle" onclick="toggleStats()">more ▾</button>
   </div>
 
   <div class="nav-bar">
@@ -219,6 +220,6 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="app36.js"></script>
+<script src="app37.js"></script>
 </body>
 </html>
