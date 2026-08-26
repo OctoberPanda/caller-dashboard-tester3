@@ -30,7 +30,7 @@
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v46</span>
+      <span class="tester-badge">TESTER v47</span>
       <div class="date-wrap">
         <span class="date-label">Date</span>
         <input type="text" id="work-date" placeholder="M/D/YYYY" onchange="onDateChange()"/>
@@ -41,6 +41,8 @@
       <button class="btn-sm" onclick="clearDayLogs()">🗑 Clear day</button>
       <button class="btn-sm" onclick="loadSheet()">↻ Refresh</button>
       <button class="btn-sm" onclick="showDNEReport()">🚫 Non-existent leads</button>
+      <button class="btn-sm" onclick="showFlagReport('today')">🚩 Today's flags</button>
+      <button class="btn-sm" onclick="showFlagReport('all')">🚩 All flags ever</button>
       <button class="btn-eod" onclick="showEOD()">End of day report</button>
       <button class="btn-icon" onclick="showSettings()">⚙️</button>
     </div>
@@ -185,7 +187,7 @@
       </div>
     </div>
     <div class="modal-body">
-      <div class="form-group" style="margin-bottom:1rem">
+      <div class="form-group" id="eod-dials-row" style="margin-bottom:1rem">
         <label>Total dials from CloudTalk (overrides app count)</label>
         <input type="number" id="eod-dials" style="max-width:260px"/>
       </div>
@@ -220,6 +222,6 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="app46.js"></script>
+<script src="app47.js"></script>
 </body>
 </html>
