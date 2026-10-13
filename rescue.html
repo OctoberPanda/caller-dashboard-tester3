@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Call Rescue</title>
+<style>
+  :root{color-scheme:light dark}
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;padding:16px;background:#0f1420;color:#e8edf5;line-height:1.5}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:#9fb0c8;font-size:13px;margin-bottom:16px}
+  .card{background:#18202e;border:1px solid #2a3547;border-radius:12px;padding:16px;margin-bottom:14px}
+  .big{font-size:34px;font-weight:800;color:#5ad18a}
+  .warn{color:#f0a84b}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+  button{flex:1;min-width:150px;background:#2e5a96;color:#fff;border:none;border-radius:10px;padding:14px 16px;font-size:15px;font-weight:700;cursor:pointer}
+  button.green{background:#2e7d32}
+  button:active{opacity:.85}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #2a3547;vertical-align:top}
+  th{color:#9fb0c8;position:sticky;top:0;background:#18202e}
+  .datehdr{font-weight:800;color:#8fd0ff;margin:14px 0 2px;font-size:14px}
+  .scroll{max-height:50vh;overflow:auto;border:1px solid #2a3547;border-radius:8px}
+  code{background:#222c3c;padding:1px 5px;border-radius:4px}
+  .muted{color:#7f90a8}
+</style>
+</head>
+<body>
+<h1>Call Rescue</h1>
+<div class="sub">Reads the calls saved in this browser. It does not change or delete anything.</div>
+
+<div class="card">
+  <div>Total calls found in storage</div>
+  <div class="big" id="total">…</div>
+  <div class="muted" id="breakdown"></div>
+</div>
+
+<div class="row">
+  <button class="green" onclick="dl('json')">⬇ Download full backup (JSON)</button>
+  <button onclick="dl('csv')">⬇ Download all calls (CSV)</button>
+</div>
+<div class="sub warn" id="note"></div>
+
+<div class="card">
+  <div class="datehdr" style="margin-top:0">What is saved, by day</div>
+  <div class="scroll" id="list"></div>
+</div>
+
+<script>
+// Pull everything out of localStorage for this origin. Pure read.
+var dump={};
+try{
+  for(var i=0;i<localStorage.length;i++){
+    var k=localStorage.key(i);
+    dump[k]=localStorage.getItem(k);
+  }
+}catch(e){ document.getElementById('note').textContent='Could not read storage: '+e; }
+
+function parseLogs(){
+  var raw=dump['cdt3_logs'];
+  if(!raw){return {byDate:{},total:0,deleted:0};}
+  var logs={};
+  try{ logs=JSON.parse(raw); }catch(e){ return {byDate:{},total:0,deleted:0,err:String(e)}; }
+  var byDate={},total=0,deleted=0;
+  Object.keys(logs).forEach(function(key){
+    var parts=key.split('__');
+    var date=parts[0]||'(no date)';
+    var bank=parts.slice(1).join('__');
+    (logs[key]||[]).forEach(function(l){
+      var rec={bank:bank,role:l.role||'',who:l.who||'',outcome:l.outcome||'',phone:l.phone||'',note:(l.noteText||l.notesTxt||''),deleted:!!l.deleted};
+      if(!byDate[date])byDate[date]=[];
+      byDate[date].push(rec);
+      total++; if(l.deleted)deleted++;
+    });
+  });
+  return {byDate:byDate,total:total,deleted:deleted};
+}
+
+var P=parseLogs();
+document.getElementById('total').textContent=P.total;
+var live=P.total-P.deleted;
+document.getElementById('breakdown').innerHTML=
+  live+' active, '+P.deleted+' marked cleared (still recoverable). '+
+  'Dates: '+Object.keys(P.byDate).map(function(d){return d+' ('+P.byDate[d].length+')';}).join(', ');
+
+if(P.total===0){
+  document.getElementById('note').textContent='No calls found in THIS browser. If you called from a different phone or browser, open this same page there instead. Do not clear any browser data.';
+}else{
+  document.getElementById('note').textContent='Download the JSON backup and send it to Claude. That file rebuilds the sheet.';
+}
+
+// render list
+var html='';
+Object.keys(P.byDate).sort().forEach(function(d){
+  html+='<div class="datehdr">'+d+' — '+P.byDate[d].length+' calls</div>';
+  html+='<table><tr><th>Bank</th><th>Role</th><th>Outcome</th><th>Who</th><th>Note</th></tr>';
+  P.byDate[d].forEach(function(r){
+    html+='<tr style="'+(r.deleted?'opacity:.5':'')+'"><td>'+esc(r.bank)+'</td><td>'+esc(r.role)+'</td><td>'+esc(r.outcome)+(r.deleted?' <span class="muted">(cleared)</span>':'')+'</td><td>'+esc(r.who)+'</td><td>'+esc(r.note)+'</td></tr>';
+  });
+  html+='</table>';
+});
+document.getElementById('list').innerHTML=html;
+
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function dl(kind){
+  var blob,name;
+  if(kind==='json'){
+    blob=new Blob([JSON.stringify(dump,null,2)],{type:'application/json'});
+    name='call_backup_'+stamp()+'.json';
+  }else{
+    var rows=[['Date','Bank','Role','Outcome','Who','Phone','Note','Cleared?']];
+    Object.keys(P.byDate).sort().forEach(function(d){
+      P.byDate[d].forEach(function(r){
+        rows.push([d,r.bank,r.role,r.outcome,r.who,r.phone,r.note,r.deleted?'yes':'']);
+      });
+    });
+    var csv=rows.map(function(r){return r.map(function(c){return '"'+String(c==null?'':c).replace(/"/g,'""')+'"';}).join(',');}).join('\n');
+    blob=new Blob([csv],{type:'text/csv'});
+    name='calls_'+stamp()+'.csv';
+  }
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();
+  setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},1500);
+}
+function stamp(){var d=new Date();return d.getFullYear()+''+(d.getMonth()+1)+''+d.getDate()+'_'+d.getHours()+''+d.getMinutes();}
+</script>
+</body>
+</html>
