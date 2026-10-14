@@ -3,8 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Caller Dashboard — Tester</title>
-<link rel="stylesheet" href="style12.css">
+<link rel="stylesheet" href="style14.css?v=58">
 </head>
 <body>
 
@@ -30,7 +33,8 @@
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v54</span>
+      <span class="tester-badge">TESTER v58</span>
+      <button class="btn-backup" onclick="exportBackup()" title="Download a backup of all your calls">⭳ Backup</button>
       <div class="date-wrap">
         <span class="date-label">Date</span>
         <input type="text" id="work-date" placeholder="M/D/YYYY" onchange="onDateChange()"/>
@@ -67,7 +71,7 @@
       <span class="nav-counter" id="nav-counter">Bank 1 of 137</span>
       <div class="nav-filter-wrap">
         <div style="position:relative;flex:1">
-          <input type="text" id="search" autocomplete="off" placeholder="🔍 Search bank name or row #" oninput="onSearchLive()" onkeydown="searchKey(event)" onfocus="onSearchLive()"/>
+          <input type="text" id="search" autocomplete="off" placeholder="🔍 Search bank, lead name, or phone #" oninput="onSearchLive()" onkeydown="searchKey(event)" onfocus="onSearchLive()"/>
           <div id="search-dropdown" class="search-dropdown hidden"></div>
         </div>
         <select id="f-status" onchange="onFilter()">
@@ -222,6 +226,6 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
-<script src="app54.js"></script>
+<script src="app58.js?v=58"></script>
 </body>
 </html>
