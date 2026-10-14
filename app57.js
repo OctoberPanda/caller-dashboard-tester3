@@ -1,0 +1,2972 @@
+// CALLER DASHBOARD TESTER v3
+// Built from scratch — unified number modal, date-based persistence, bank-name keying
+
+const SCRIPT_URL='https://script.google.com/macros/s/AKfycbyTM-Lazs9nAS-_R6FHRmF3EdhC0eg-wz7KPZi1AFHMbvvf-vnAxKbz3Ql2oGd5Puue/exec';
+const CFG_KEY='cdt3_config';
+const LOGS_KEY='cdt3_logs';
+const FLAGS_KEY='cdt3_flags';
+const CALLS_KEY='cdt3_calls'; // per-number call counters
+const CALLMETA_KEY='cdt3_callmeta'; // per-number no-answer/attempted counts for 2x/7x rule
+const BLACKBOX_KEY='cdt3_blackbox'; // per-number: is it a black box (no identifier) number
+const HQFLAG_KEY='cdt3_hqflags'; // HQ number flags (app only)
+const HQMETA_KEY='cdt3_hqmeta'; // HQ number 2x/7x counters + blackbox toggle
+const DNE_KEY='cdt3_dne'; // leads that do not exist in bank system (app only)
+const AFU_KEY='cdt3_appfu'; // in-app follow-up scheduler (app only)
+const PARKED_KEY='cdt3_parked'; // banks manually moved off the main list (app only)
+const LEADFLAG_KEY='cdt3_leadflags'; // lead-level flags, manual text (app only)
+const APPNUM_KEY='cdt3_appnums'; // app-only numbers added per lead
+const STOPMARK_KEY='cdt3_stopmark'; // bank the user stopped at (resume next day)
+const DIRECTLINE_KEY='cdt3_directline'; // per-lead direct line marker (app only)
+const NOPOLICY_KEY='cdt3_nopolicy'; // banks with a no-direct-number in-house policy (app only)
+const NOEMP_KEY='cdt3_noemp'; // banks with a no-employee-information policy (app only)
+const HIDDENNUM_KEY='cdt3_hiddennums'; // per-lead numbers hidden in app (kept on sheet)
+const OFFCALL_KEY='cdt3_offcall'; // per-lead taken off call list
+const LEADSNAP_KEY='cdt3_leadsnap'; // name/phone snapshot at last call, to detect sheet corrections
+const FUD_KEY='cdt3_fud'; // follow-up sheet banks: daily dial counters, done-today, next date (app only)
+const FUHIDE_KEY='cdt3_fuhide'; // follow-up banks hidden from the app (app only, row kept on sheet)
+
+// COLUMN MAP (0-based)
+const C={
+  ROW:0,BANK:1,STATE:5,CITY:6,REG:7,AA:8,HQ:4,TEAMCALLED:3,
+  CEO_NAME:9,CEO_PHONE:10,CEO_EA:11,CEO_EMAIL:12,CEO_INIT:13,
+  CEO_RECENT:14,CEO_TIMES:15,CEO_WHO:16,CEO_NOTES:17,CEO_OUTCOME:18,
+  CRA_NAME:19,CRA_PHONE:20,CRA_EMAIL_I:21,CRA_EMAIL_R:22,CRA_INIT:23,
+  CRA_RECENT:24,CRA_TIMES:25,CRA_WHO:26,CRA_NOTES:27,CRA_OUTCOME:28,
+  CFO_NAME:29,CFO_PHONE:30,CFO_EMAIL_I:31,CFO_EMAIL_R:32,CFO_INIT:33,
+  CFO_RECENT:34,CFO_TIMES:35,CFO_WHO:36,CFO_NOTES:37,CFO_OUTCOME:38,
+};
+
+const RC={
+  CEO:{recent:14,times:15,who:16,notes:17,outcome:18,phone:10,name:9,ea:11,email:12,init:12,initCall:13},
+  CRA:{recent:24,times:25,who:26,notes:27,outcome:28,phone:20,name:19,ea:null,email:21,emailR:22,init:21,initCall:23},
+  CFO:{recent:34,times:35,who:36,notes:37,outcome:38,phone:30,name:29,ea:null,email:31,emailR:32,init:31,initCall:33},
+};
+
+// Follow-Up Sheet columns
+const FU={BANK:0,PERSON:1,CONTACT:2,HQ:3,INITCALL:4,FOLLOWUP:5,TIMES:6,REP:7,NOTES:8};
+// Priority Banks tab columns (1 header row, data starts sheet row 2)
+const PRI={NUM:0,BANK:1,ASSETS:2,CEO:{name:3,phone:4,recent:5,notes:6},CRA:{name:7,phone:8,recent:9,notes:10},CFO:{name:11,phone:12,recent:13,notes:14}};
+let priorities=[]; // {pri: sheetRow, d:[...]}
+let priByBank={}; // bankId(mainRi) -> {pri, d}
+let followups=[]; // {fri, d:[...]} rows where rep is Leon
+
+const FLAG_OPTIONS=['Black box VM','Dead air','Unidentifiable VM','No answer, no VM or identifier','Wrong number','Wrong contact','Wrong bank','Not in service','Disconnected / not in service','No employee info given','Do not call / opt-out','Fax machine','Did not hear full name','Call screened by AI','Invalid number','Call rejected','No exec access'];
+
+const OC={'Expressed Interest':'green','Follow-up':'blue','Email requested/ Follow-up':'blue','Left Message':'blue','Check Back Later':'amber','Open':'amber','Decline':'red','Request To Unsubscribe':'red','Wrong Number':'red','Wrong Contact':'red',"Not the bank's fund type":'red'};
+
+let cfg={},banks=[],logs={},flags={},calls={},apptHeld={},emailLogs={},callMeta={},blackbox={},hqFlags={},hqMeta={},dne={},appFU={},parked={},fud={},fuByBank={},leadFlags={},appNums={},stopMark=null,directLines={},leadSnap={},noPolicy={},noEmp={},hiddenNums={},offCallList={},openRI=null,numCtx=null,genCtx=null,undoCtx=null,workDate='';
+let navList=[],navIdx=0,listDirty=false;
+const APPT_KEY='cdt3_appt';
+const EMAIL_KEY='cdt3_email';
+
+// Keyboard navigation
+document.addEventListener('keydown',(e)=>{
+  const tag=document.activeElement?.tagName?.toLowerCase();
+  if(tag==='input'||tag==='textarea'||tag==='select')return;
+  if(e.key==='ArrowRight'||e.key==='ArrowDown')nextBank();
+  if(e.key==='ArrowLeft'||e.key==='ArrowUp')prevBank();
+});
+
+setInterval(()=>{listDirty=true;},15*60*1000); // mark stale; list only rebuilds on Next/Prev
+
+window.onload=()=>{
+  cfg=loadCfg();logs=loadLogs();flags=loadFlags();calls=loadCalls();apptHeld=loadAppt();emailLogs=loadEmailLogs();callMeta=loadCallMeta();blackbox=loadBlackbox();hqFlags=loadHQFlags();hqMeta=loadHQMeta();dne=loadDNE();appFU=loadAFU();parked=loadParked();fud=loadFUD();fuHide=loadFuHide();leadFlags=loadLeadFlags();appNums=loadAppNums();stopMark=loadStopMark();directLines=loadDirectLines();leadSnap=loadLeadSnap();noPolicy=loadNoPolicy();noEmp=loadNoEmp();hiddenNums=loadHiddenNums();offCallList=loadOffCallList();
+  // Migrate old cdt2 logs if cdt3 is empty
+  migrateLegacyLogs();
+  // v57: make sure today has room to save (archives days older than 45 if storage is tight)
+  ensureStorageHeadroom();
+  workDate=cfg.lastWorkDate||initWorkDate();
+  if(!cfg.sheetId||!cfg.tab||!cfg.apiKey||!cfg.name){show('setup-screen');prefillSetup();}
+  else{show('main-app');boot();}
+};
+
+function prefillSetup(){sv('s-name',cfg.name||'');sv('s-sheet-id',cfg.sheetId||'');sv('s-tab',cfg.tab||'');sv('s-update-id',cfg.updateSheetId||'');sv('s-update-tab',cfg.updateTab||'');sv('s-api-key',cfg.apiKey||'');}
+function saveSetup(){
+  const name=gv('s-name').trim(),sheetId=gv('s-sheet-id').trim(),tab=gv('s-tab').trim(),updateSheetId=gv('s-update-id').trim(),updateTab=gv('s-update-tab').trim(),followupTab=gv('s-followup-tab').trim(),priorityTab=gv('s-priority-tab').trim(),apiKey=gv('s-api-key').trim();
+  if(!name||!sheetId||!tab||!apiKey){toast('Please fill in all required fields','error');return;}
+  cfg={name,sheetId,tab,updateSheetId,updateTab,followupTab,priorityTab,apiKey,lastWorkDate:workDate};saveCfg();show('main-app');boot();
+}
+function boot(){st('rep-badge',cfg.name);if(!workDate)workDate=initWorkDate();el('work-date').value=workDate;loadSheet();}
+function onDateChange(){workDate=gv('work-date').trim();if(!workDate)return;cfg.lastWorkDate=workDate;saveCfg();renderStats();applyFilters(false);}
+function initWorkDate(){const now=new Date();const et=new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'}));return(et.getMonth()+1)+'/'+et.getDate()+'/'+et.getFullYear();}
+function workDateDisplay(){return workDate||'';}
+
+async function loadFollowups(){
+  const fuTab=cfg.followupTab||'Follow-Up Sheet';
+  const repName=(cfg.name||'Leon').split(' ')[0]; // first name, e.g. "Leon"
+  try{
+    const url=`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent("'"+fuTab+"'")}?key=${cfg.apiKey}`;
+    const res=await fetch(url);const data=await res.json();
+    if(data.error){console.error('Follow-up load error',data.error.message);followups=[];return;}
+    followups=(data.values||[]).map((row,i)=>({fri:i+1,d:row})).slice(2)
+      .filter(f=>f.d[FU.BANK]&&String(f.d[FU.BANK]).trim()
+        &&String(f.d[FU.REP]||'').toLowerCase().includes(repName.toLowerCase()));
+  }catch(e){console.error('Follow-up load failed',e);followups=[];}
+}
+
+// Match a follow-up bank to the main tracker (loose: trim + case-insensitive)
+function findMainBank(bankName){
+  const norm=s=>String(s||'').replace(/\u00a0/g,' ').trim().toLowerCase();
+  const target=norm(bankName);
+  return banks.find(b=>norm(b.d[C.BANK])===target)
+    ||banks.find(b=>norm(b.d[C.BANK]).includes(target)||target.includes(norm(b.d[C.BANK])));
+}
+
+// ── FOLLOW-UP VIEW ──
+let followupOpen=false;
+function toggleFollowupView(){
+  followupOpen=!followupOpen;
+  el('followup-view').classList.toggle('hidden',!followupOpen);
+  el('bank-view').classList.toggle('hidden',followupOpen);
+  document.querySelector('.nav-bar')?.classList.toggle('hidden',followupOpen);
+  if(el('btn-followup'))el('btn-followup').textContent=followupOpen?'← Back to banks':'📋 Follow-Ups';
+  if(followupOpen)renderFollowups();
+}
+
+function renderFollowups(){
+  const v=el('followup-view');
+  if(!followups.length){v.innerHTML='<div class="loading">No follow-up banks assigned to you.</div>';return;}
+  let h='<div style="max-width:900px;margin:0 auto">';
+  h+='<h2 style="font-size:18px;font-weight:700;margin:8px 0 4px">Daily Follow-Ups</h2>';
+  h+='<div style="font-size:12px;color:var(--text3);margin-bottom:16px">'+followups.length+' banks · one log per day, not per dial</div>';
+  followups.forEach(f=>{
+    const d=f.d;
+    const bank=String(d[FU.BANK]||'').replace(/\u00a0/g,' ').trim();
+    const person=d[FU.PERSON]||'';
+    const contact=d[FU.CONTACT]||'';
+    const hq=d[FU.HQ]||'';
+    const followDate=d[FU.FOLLOWUP]?fmtSheetDate(d[FU.FOLLOWUP]):'never';
+    const times=d[FU.TIMES]||'0';
+    const notes=d[FU.NOTES]||'';
+    // Pull AA + email date from main tracker
+    const mb=findMainBank(bank);
+    const role=fuRole(person);
+    let aa='',emailDate='',reg='';
+    if(mb){
+      aa=String(mb.d[C.AA]||'').trim();
+      reg=String(mb.d[C.REG]||'').trim();
+      if(role&&RC[role])emailDate=effEmailDate(mb.d,role);
+    }
+    const doneToday=d[FU.FOLLOWUP]&&fmtSheetDate(d[FU.FOLLOWUP])===workDateDisplay();
+    h+='<div class="fu-card'+(doneToday?' fu-done':'')+'">';
+    h+='<div class="fu-head"><div><div class="fu-bank">'+esc(bank)+(doneToday?' <span class="fu-done-tag">✓ done today</span>':'')+'</div>';
+    h+='<div class="fu-person">'+esc(person)+'</div></div>';
+    h+='<button class="btn-log-call" style="width:auto;padding:8px 16px" onclick="openFollowupModal('+f.fri+')">Log follow-up</button></div>';
+    h+='<div class="fu-meta">';
+    if(contact)h+='<span class="fu-chip" onclick="copyPhone(\''+esc(phoneBase(String(contact)))+'\',this)">📞 '+esc(contact)+'</span>';
+    if(hq)h+='<span class="fu-chip" onclick="copyPhone(\''+esc(phoneBase(String(hq)))+'\',this)">🏢 HQ '+esc(hq)+'</span>';
+    if(reg)h+='<span class="fu-chip">'+esc(reg)+'</span>';
+    if(aa)h+='<span class="fu-chip">AA: '+esc(aa)+'</span>';
+    if(emailDate)h+='<span class="fu-chip">📧 Email sent '+esc(emailDate)+'</span>';
+    h+='<span class="fu-chip">Last follow-up: '+esc(followDate)+'</span>';
+    h+='<span class="fu-chip">'+esc(times)+'x called</span>';
+    h+='</div>';
+    if(notes)h+='<div class="fu-notes">'+esc(formatNotes(String(notes)))+'</div>';
+    h+='</div>';
+  });
+  h+='</div>';
+  v.innerHTML=h;
+}
+
+let fuCtx=null;
+function openFollowupModal(fri){
+  const f=followups.find(x=>x.fri===fri);if(!f)return;
+  fuCtx={fri};
+  const d=f.d;
+  const bank=String(d[FU.BANK]||'').replace(/\u00a0/g,' ').trim();
+  const person=d[FU.PERSON]||'';
+  const contact=d[FU.CONTACT]||'';
+  const hq=d[FU.HQ]||'';
+  const mb=findMainBank(bank);const role=fuRole(person);
+  let aa='',emailDate='',reg='';
+  if(mb){aa=String(mb.d[C.AA]||'').trim();reg=String(mb.d[C.REG]||'').trim();if(role&&RC[role])emailDate=effEmailDate(mb.d,role);}
+  st('nm-title',bank+' — Follow-Up');
+  st('nm-sub',person+(role?' ('+role+')':''));
+  let html='';
+  html+='<div style="font-size:12px;color:var(--text2);background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--radius);padding:9px 11px;margin-bottom:12px;line-height:1.7">';
+  if(contact)html+='📞 '+esc(contact)+'<br>';
+  if(hq)html+='🏢 HQ: '+esc(hq)+'<br>';
+  if(reg)html+='Regulator: '+esc(reg)+'<br>';
+  if(aa)html+='AA: '+esc(aa)+'<br>';
+  if(emailDate)html+='📧 Last email sent: '+esc(emailDate)+'<br>';
+  html+='Times called: '+esc(String(d[FU.TIMES]||'0'))+'</div>';
+  const existing=String(d[FU.NOTES]||'');
+  if(existing.trim()){const lines=existing.trim().split('\n').slice(-4);html+='<div class="modal-notes-preview"><div class="mnp-label">Recent notes</div><div class="mnp-text">'+esc(lines.join('\n'))+'</div></div>';}
+  html+='<div class="form-group" style="margin-top:12px"><label>Today\'s note (one per day, all your calls today)</label><textarea id="fu-note" rows="3" placeholder="What happened across your calls today?"></textarea></div>';
+  html+='<div class="modal-actions"><button class="btn-primary" onclick="saveFollowup()">Save follow-up (+1 called)</button><button class="btn-cancel" onclick="closeNumModal()">Cancel</button></div>';
+  el('nm-body').innerHTML=html;
+  el('num-modal').classList.remove('hidden');
+}
+
+function saveFollowup(){
+  if(!fuCtx)return;
+  const f=followups.find(x=>x.fri===fuCtx.fri);if(!f)return;
+  const d=f.d;
+  const note=el('fu-note')?.value.trim()||'';
+  const dateStr=workDateDisplay();
+  // Update date, +1 times, add one dated note line
+  d[FU.FOLLOWUP]=dateStr;
+  d[FU.TIMES]=String((parseInt(d[FU.TIMES])||0)+1);
+  if(note){
+    const existing=String(d[FU.NOTES]||'');
+    const entry=dateStr+': '+note;
+    d[FU.NOTES]=existing?existing+'\n'+entry:entry;
+  }
+  // Write back to Follow-Up tab
+  const fuTab=cfg.followupTab||'Follow-Up Sheet';
+  const updates=[
+    {row:f.fri,col:FU.FOLLOWUP,value:d[FU.FOLLOWUP]},
+    {row:f.fri,col:FU.TIMES,value:d[FU.TIMES]},
+    {row:f.fri,col:FU.NOTES,value:d[FU.NOTES]||''}
+  ];
+  fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({sheetId:cfg.sheetId,tabName:fuTab,updates})}).catch(e=>console.error(e));
+  closeNumModal();renderFollowups();
+  toast('Follow-up logged (+1 called)','success');
+}
+
+// Extract role (CEO/CRA/CFO) from a follow-up person string like "CFO: Becky Foster"
+function fuRole(personStr){
+  const m=String(personStr||'').match(/\b(CEO|CRA|CFO|EA)\b/i);
+  if(!m)return null;
+  const r=m[1].toUpperCase();
+  return r==='EA'?'CEO':r; // EA belongs to the CEO lead
+}
+
+async function loadSheet(){
+  el('bank-view').innerHTML='<div class="loading">Loading your sheet...</div>';
+  if(!workDate)workDate=initWorkDate();el('work-date').value=workDate;
+  const url=`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent("'"+cfg.tab+"'")}?key=${cfg.apiKey}`;
+  try{
+    const res=await fetch(url);const data=await res.json();
+    if(data.error){el('bank-view').innerHTML=`<div class="loading error">❌ ${data.error.message}<br><br>Check Sheet ID, tab name, and API key in ⚙️ Settings.</div>`;return;}
+    banks=(data.values||[]).map((row,i)=>({ri:i+1,d:row})).slice(2).filter(b=>b.d[C.BANK]&&String(b.d[C.BANK]).trim());
+    resolveLegacyLogs();
+    await detectSheetStrikethroughs();
+    await loadFollowups();
+    buildFuByBank();
+    await loadPriority();
+    buildPriByBank();
+    renderStats();
+    applyFilters(false,true);
+  }catch(e){
+    // Show error but still try to render banks if we have them
+    if(banks.length){
+      applyFilters(false,true);
+    }else{
+      el('bank-view').innerHTML='<div class="loading error">❌ '+e.message+'<br><br>Check Sheet ID, tab name, and API key in ⚙️ Settings.</div>';
+    }
+  }
+}
+
+function migrateLegacyLogs(){
+  // Only migrate if cdt3 logs are empty
+  if(Object.keys(logs).length>0)return;
+  try{
+    const old2Logs=JSON.parse(localStorage.getItem('cdt2_logs'))||{};
+    const old2Flags=JSON.parse(localStorage.getItem('cdt2_flags'))||{};
+    if(Object.keys(old2Logs).length===0&&Object.keys(old2Flags).length===0)return;
+    // Migrate logs — keys were date__ri, now date__BANKNAME
+    // We can't resolve bank names without the sheet loaded yet
+    // So store them temporarily and resolve after sheet loads
+    localStorage.setItem('cdt3_legacy_logs',JSON.stringify(old2Logs));
+    localStorage.setItem('cdt3_legacy_flags',JSON.stringify(old2Flags));
+    console.log('Legacy logs found — will migrate after sheet loads');
+  }catch(e){console.error('Migration error',e);}
+}
+
+function resolveLegacyLogs(){
+  try{
+    const legacyLogs=JSON.parse(localStorage.getItem('cdt3_legacy_logs'))||{};
+    const legacyFlags=JSON.parse(localStorage.getItem('cdt3_legacy_flags'))||{};
+    if(Object.keys(legacyLogs).length===0&&Object.keys(legacyFlags).length===0)return;
+
+    let migrated=0;
+    // Migrate logs — key was date__ri or date_ri
+    Object.entries(legacyLogs).forEach(([key,entries])=>{
+      if(!Array.isArray(entries))return;
+      const parts=key.split('__');
+      const date=parts[0];const ri=parseInt(parts[1])||parseInt(key.split('_')[1]);
+      if(!ri)return;
+      const bank=banks.find(x=>x.ri===ri);
+      if(!bank)return;
+      const newKey=date+'__'+String(bank.d[C.BANK]||'').trim().toUpperCase();
+      if(!logs[newKey]){logs[newKey]=[];}
+      entries.filter(l=>!l.deleted).forEach(l=>{
+        l.called=true; // assume all old logs were called
+        if(!logs[newKey].find(x=>x.id===l.id)){logs[newKey].push(l);migrated++;}
+      });
+    });
+
+    // Migrate flags — key was ri_role_phone or bankId__role__phone
+    Object.entries(legacyFlags).forEach(([key,f])=>{
+      if(f.undone)return;
+      const parts=key.split('_');
+      const ri=parseInt(parts[0]);
+      if(!ri)return;
+      const bank=banks.find(x=>x.ri===ri);
+      if(!bank)return;
+      const newKey=String(bank.d[C.BANK]||'').trim().toUpperCase()+'__'+f.role+'__'+f.phone;
+      if(!flags[newKey])flags[newKey]={...f};
+    });
+
+    if(migrated>0){
+      saveLogs();saveFlags();
+      localStorage.removeItem('cdt3_legacy_logs');
+      localStorage.removeItem('cdt3_legacy_flags');
+      console.log('Migrated '+migrated+' log entries from old app');
+      renderStats();applyFilters(false);
+      toast('Restored '+migrated+' entries from previous session','success');
+    }
+  }catch(e){console.error('Legacy resolve error',e);}
+}
+
+// HELPERS
+function bankId(ri){const b=banks.find(x=>x.ri===ri);return b?String(b.d[C.BANK]||'').trim().toUpperCase():'UNKNOWN_'+ri;}
+function logKey(ri){return workDate+'__'+bankId(ri);}
+function logsForDate(ri,role){const all=(logs[logKey(ri)]||[]).filter(l=>!l.deleted);return role?all.filter(l=>l.role===role):all;}
+// SHEET-READ TOGGLE: off by default (it was causing render hangs on large lists).
+// When false, these return false immediately so rendering stays fast.
+let SHEET_READ_ON=false;
+function sheetWorkedToday(ri,role){
+  if(!SHEET_READ_ON)return false;
+  const b=banks.find(x=>x.ri===ri);if(!b)return false;
+  const rc=RC[role];const raw=b.d[rc.recent];if(!raw)return false;
+  try{return fmtSheetDate(raw)===workDateDisplay();}catch{return false;}
+}
+// Lead counts as worked today if the app logged it OR the sheet shows today's date
+function leadWorkedToday(ri,role){
+  return logsForDate(ri,role).some(l=>l.called)||sheetWorkedToday(ri,role);
+}
+function allLogsForDate(){const pfx=workDate+'__';return Object.entries(logs).filter(([k])=>k.startsWith(pfx)).flatMap(([,v])=>v.filter(l=>!l.deleted));}
+function parsePhones(str){
+  if(!str||!String(str).trim())return[];
+  // Split on semicolons and newlines
+  return String(str).split(/[;\n]/).map(p=>p.trim()).filter(Boolean);
+}
+function phoneDisplay(ph){
+  // Shows number cleanly — ext and opt on same line
+  return ph; // already formatted as XXX.XXX.XXXX ext/opt X
+}
+function phoneBase(ph){
+  const m=String(ph).match(/(\d{3}\.\d{3}\.\d{4})/);
+  return m?m[1]:ph;
+}
+function phoneSuffix(ph){
+  const m=String(ph).match(/\d{3}\.\d{3}\.\d{4}(.*)/);
+  return m?m[1].trim():'';
+}
+function phoneDigits(ph){
+  // Extract the 10-digit number from ANY format: 815.847.7500, (815) 847-7500, 815-847-7500
+  // Uses phoneBase first so ext/opt digits are excluded.
+  const base=phoneBase(ph);
+  const d=String(base).replace(/\D/g,'');
+  if(d.length===10)return d;
+  if(d.length===11&&d[0]==='1')return d.slice(1);
+  return d.length>=10?d.slice(0,10):'';
+}
+function isDeclinedToday(ri){return allLogsForDate().some(l=>l.ri===ri&&l.outcome==='Decline');}
+function isDeclinedSheet(ri){const b=banks.find(x=>x.ri===ri);if(!b)return false;return['CEO','CRA','CFO'].some(r=>b.d[RC[r].outcome]==='Decline');}
+function isDeclined(ri){return isDeclinedToday(ri)||isDeclinedSheet(ri);}
+function isApptHeld(ri){return apptHeld[bankId(ri)]===true;}
+function setApptHeld(ri){apptHeld[bankId(ri)]=true;ls(APPT_KEY,JSON.stringify(apptHeld));renderStats();if(openRI===ri)renderBody(ri);rebuildCard(ri,true);toast('Appointment marked as held — bank removed from call list','success');}
+function loadAppt(){try{return JSON.parse(localStorage.getItem(APPT_KEY))||{};}catch{return{};}}
+function loadEmailLogs(){try{return JSON.parse(localStorage.getItem(EMAIL_KEY))||{};}catch{return{};}}
+function saveEmailLogs(){ls(EMAIL_KEY,JSON.stringify(emailLogs));}
+function getEmailLog(ri,role){return emailLogs[bankId(ri)+'__'+role]||null;}
+function setEmailLog(ri,role,date,recipient){
+  emailLogs[bankId(ri)+'__'+role]={date,recipient,ri,role};
+  saveEmailLogs();
+  showCurrentBank();
+  toast('Email logged','success');
+}
+function bankCalledToday(ri){return allLogsForDate().some(l=>l.ri===ri&&l.called)||['CEO','CRA','CFO'].some(r=>sheetWorkedToday(ri,r));}
+// A role is "callable" if it has at least one number that is not flagged, and the lead exists
+function is7xFlag(ri,role,phone){
+  const f=flags[getFlagKey(ri,role,phone)];
+  return !!(f&&!f.undone&&f.rule==='7x');
+}
+function roleCallable(ri,role){
+  if(isDNE(ri,role))return false;
+  const b=banks.find(x=>x.ri===ri);if(!b)return false;
+  const phones=parsePhones(b.d[RC[role].phone]);
+  if(!phones.length)return false;
+  // Callable if unflagged OR flagged only as 7x (valid line, we reached the bank)
+  return phones.some(ph=>!isPhoneBad(ri,role,ph)||is7xFlag(ri,role,ph));
+}
+// Complete = every callable role has been called (uncallable roles don't count against completion)
+function bankComplete(ri){return['CEO','CRA','CFO'].every(r=>!roleCallable(ri,r)||logsForDate(ri,r).some(l=>l.called));}
+function bankIncomplete(ri){const roles=['CEO','CRA','CFO'].filter(r=>roleCallable(ri,r));const c=roles.filter(r=>logsForDate(ri,r).some(l=>l.called)).length;return c>0&&c<roles.length;}
+function pendingRoles(ri){return['CEO','CRA','CFO'].filter(r=>roleCallable(ri,r)&&!logsForDate(ri,r).some(l=>l.called));}
+function getFlagKey(ri,role,phone){return bankId(ri)+'__'+role+'__'+phone;}
+const BAD_KW=['black box','dead air','wrong number','not in service','fax machine','did not hear','unidentifiable','wrong bank','wrong contact','call screened','invalid number','call rejected'];
+function isPhoneBad(ri,role,phone){
+  const f=flags[getFlagKey(ri,role,phone)];if(f&&!f.undone)return true;
+  if(f&&f.undone)return false; // explicitly unflagged — never auto-flag again
+  // Also check by digits, in case the flag was stored under a different format/ext
+  const wantDg=phoneDigits(phone);
+  if(wantDg){
+    const byDigit=Object.values(flags).find(x=>x.ri===ri&&x.role===role&&phoneDigits(x.phone)===wantDg);
+    if(byDigit){if(!byDigit.undone)return true; else return false;}
+  }
+  const b=banks.find(x=>x.ri===ri);if(!b)return false;
+  const digits=phoneDigits(phone);if(!digits)return false;
+  // Check each notes line — the phone digits AND a bad keyword must be on the SAME line
+  const lines=String(b.d[RC[role].notes]||'').toLowerCase().split('\n');
+  return lines.some(line=>{
+    const lineDigits=line.replace(/[^\d]/g,'');
+    return lineDigits.includes(digits)&&BAD_KW.some(k=>line.includes(k));
+  });
+}
+function getBadReason(ri,role,phone){
+  const f=flags[getFlagKey(ri,role,phone)];if(f&&!f.undone)return f.issue;
+  const b=banks.find(x=>x.ri===ri);if(!b)return'';
+  const digits=phoneDigits(phone);
+  const lines=String(b.d[RC[role].notes]||'').split('\n');
+  for(const line of lines){
+    const lineDigits=line.replace(/[^\d]/g,'');
+    if(lineDigits.includes(digits)){
+      for(const kw of BAD_KW){if(line.toLowerCase().includes(kw))return kw.split(' ').map(w=>w[0].toUpperCase()+w.slice(1)).join(' ');}
+    }
+  }
+  return'Bad number';
+}
+function getCallCount(ri,role,phone){return calls[bankId(ri)+'__'+role+'__'+phone]||0;}
+function mostRecentEmail(d,role){
+  if(role==='CEO')return d[C.CEO_EMAIL]||'';
+  const a=d[role==='CRA'?C.CRA_EMAIL_I:C.CFO_EMAIL_I]||'';const b=d[role==='CRA'?C.CRA_EMAIL_R:C.CFO_EMAIL_R]||'';
+  if(!a)return b;if(!b)return a;try{return new Date(b)>new Date(a)?b:a;}catch{return b||a;}
+}
+
+// FDIC banks had emails resent 6/4/2026. Show that as the most recent email
+// date for FDIC banks unless the sheet has something later. Display only.
+const FDIC_RESEND='6/4/2026';
+function effEmailDate(d,role){
+  const raw=mostRecentEmail(d,role);
+  const isFDIC=String(d[C.REG]||'').toUpperCase().includes('FDIC');
+  if(!isFDIC)return raw?fmtSheetDate(raw):'';
+  if(!raw)return FDIC_RESEND;
+  try{return new Date(raw)>new Date(FDIC_RESEND)?fmtSheetDate(raw):FDIC_RESEND;}catch{return FDIC_RESEND;}
+}
+
+function renderStats(){
+  const all=allLogsForDate();
+  const dials=all.reduce((acc,l)=>acc+(l.dialCount||0),0);
+  const banksDialed=new Set(all.filter(l=>l.called&&(l.dialCount||0)>0).map(l=>l.ri)).size;
+  // Merge sheet-scanned entries so manually-fixed sheet dates still count
+  let merged=all.filter(l=>l.called);
+  if(banks.length){
+    const seen=new Set(merged.map(l=>l.ri+'__'+l.role));
+    sheetReachedToday().forEach(s=>{if(!seen.has(s.ri+'__'+s.role)){merged=merged.concat(s);seen.add(s.ri+'__'+s.role);}});
+  }
+  // Bank reached = a real person answered (who not NO CONTACT), GK included
+  const banksReached=new Set(merged.filter(l=>l.who&&l.who!=='NO CONTACT').map(l=>l.ri)).size;
+  // People reached = decision makers only (EA/CEO/CRA/CFO)
+  const DM=['EA','CEO','CFO','CRA'];
+  const peopleReached=new Set(merged.filter(l=>DM.includes(l.who)).map(l=>l.ri+'_'+l.role)).size;
+  const completeCnt=banks.filter(b=>bankComplete(b.ri)).length;
+  const sosCnt=Object.values(flags).filter(f=>!f.undone).length;
+  const decToday=new Set(all.filter(l=>l.outcome==='Decline').map(l=>l.ri)).size;
+  const apptToday=new Set(all.filter(l=>l.outcome==='Expressed Interest').map(l=>l.ri)).size;
+  const activeCnt=banks.filter(b=>!isDeclined(b.ri)&&!isApptHeld(b.ri)).length;
+  st('st-dials',dials);st('st-bdialed',banksDialed);st('st-reached',banksReached);st('st-people',peopleReached);
+  st('st-complete',completeCnt);st('st-sos',sosCnt);st('st-declined',decToday);
+  st('st-appt',apptToday);st('st-total',activeCnt);
+}
+
+function buildStateFilter(){
+  const sel=el('f-state');const states=[...new Set(banks.map(b=>b.d[C.STATE]).filter(Boolean))].sort();
+  sel.innerHTML='<option value="">All states</option>';states.forEach(s=>{const o=document.createElement('option');o.value=s;o.textContent=s;sel.appendChild(o);});
+}
+function hasInterest(ri){const b=banks.find(x=>x.ri===ri);if(!b)return false;return logsForDate(ri).some(l=>l.outcome==='Expressed Interest')||['CEO','CRA','CFO'].some(r=>b.d[RC[r].outcome]==='Expressed Interest');}
+function isSetAside(ri){return isDeclined(ri)||isApptHeld(ri)||hasInterest(ri);}
+function visibleBanks(){
+  const status=gv('f-status');
+  // Set-aside view shows declined, expressed interest, and appointment held
+  if(status==='set-aside')return banks.filter(b=>isSetAside(b.ri));
+  if(status==='parked')return banks.filter(b=>isParked(b.ri));
+  if(status==='declined-all')return banks.filter(b=>isDeclined(b.ri));
+  if(status==='appt-held')return banks.filter(b=>isApptHeld(b.ri));
+  if(status==='interest')return banks.filter(b=>hasInterest(b.ri));
+  // Main carousel: exclude declined, appointment held, and expressed interest
+  return banks.filter(b=>!isDeclinedSheet(b.ri)&&!isApptHeld(b.ri)&&!hasInterest(b.ri)&&!isDeclinedToday(b.ri)&&!isParked(b.ri));
+}
+function applyFilters(resetNav,smartStart){
+  if(resetNav!==false)navIdx=0;
+  buildNavList();
+  if(smartStart){
+    const idx=findSmartStartIdx();
+    if(idx>=0&&idx<navList.length)navIdx=idx;
+  }
+  if(navIdx>=navList.length)navIdx=Math.max(0,navList.length-1);
+  listDirty=false;
+  updateNavCounter();
+  showCurrentBank();
+}
+// Timezone rank by state (East to West). Compound codes use the first state.
+const TZ_RANK={
+  FL:1,GA:1,IN:1,KY:1,MA:1,MD:1,ME:1,MI:1,NC:1,NH:1,NJ:1,NY:1,OH:1,PA:1,RI:1,SC:1,VA:1,CT:1,DE:1,DC:1,WV:1,VT:1,
+  AL:2,AR:2,IA:2,IL:2,KS:2,LA:2,MN:2,MO:2,MS:2,ND:2,NE:2,SD:2,TX:2,OK:2,WI:2,TN:2,
+  AZ:3,CO:3,NM:3,ID:3,MT:3,UT:3,WY:3,
+  CA:4,NV:4,OR:4,WA:4,
+  AK:5,
+  HI:6
+};
+function tzRank(ri){
+  const b=banks.find(x=>x.ri===ri);if(!b)return 9;
+  const s=String(b.d[C.STATE]||'').trim().toUpperCase().split('/')[0].trim();
+  return TZ_RANK[s]||9;
+}
+const TZ_SHORT={1:'ET',2:'CT',3:'MT',4:'PT',5:'AKT',6:'HT',9:'TZ?'};
+function tzLabel(ri){return TZ_SHORT[tzRank(ri)]||'TZ?';}
+function buildNavList(){
+  const status=gv('f-status');
+  const result=visibleBanks().filter(b=>{
+    const ri=b.ri,name=String(b.d[C.BANK]||'').toLowerCase();
+    if(status==='called-today')return bankCalledToday(ri)&&!isDeclined(ri)&&!isApptHeld(ri);
+    if(status==='not-called-today')return!bankCalledToday(ri)&&!isDeclined(ri)&&!isApptHeld(ri);
+    if(status==='incomplete')return bankIncomplete(ri);
+    if(status==='complete')return bankComplete(ri);
+    if(status==='sos')return Object.keys(flags).some(k=>k.startsWith(bankId(ri)+'__')&&!flags[k].undone);
+    if(status==='interest')return logsForDate(ri).some(l=>l.outcome==='Expressed Interest')||['CEO','CRA','CFO'].some(r=>b.d[RC[r].outcome]==='Expressed Interest');
+    if(status==='declined-today')return isDeclinedToday(ri);
+    if(status==='attention')return['CEO','CRA','CFO'].some(r=>{const rl=logsForDate(ri,r);return rl.filter(l=>l.called&&l.outcome==='No Answer').length>=2||rl.filter(l=>l.called&&['Left Message','Follow-up','Email requested/ Follow-up','Check Back Later'].includes(l.outcome)).length>=7;});
+    return true;
+  });
+  const calledSet=new Set(allLogsForDate().filter(l=>l.called).map(l=>l.ri));
+  navList=result.slice().sort((a,b)=>{
+    const pa=(fuActive(a.ri)||priActive(a.ri,calledSet))?0:(bankHasDueAFU(a.ri)?1:2);
+    const pb=(fuActive(b.ri)||priActive(b.ri,calledSet))?0:(bankHasDueAFU(b.ri)?1:2);
+    // Priority + follow-up first, then AFU-due, then the rest — each block ordered East to West by timezone
+    return (pa-pb) || (tzRank(a.ri)-tzRank(b.ri)) || (a.ri-b.ri);
+  });
+}
+// NAVIGATION
+let searchMatches=[],searchSel=-1;
+function onSearchLive(){
+  const val=gv('search').trim().toLowerCase();
+  const dd=el('search-dropdown');
+  if(!val){dd.classList.add('hidden');dd.innerHTML='';searchMatches=[];return;}
+  // Search across ALL banks, every group, by name OR row number. Prefix matches first, then contains.
+  const isNum=/^\d+$/.test(val);
+  const scored=banks.map(b=>{
+    const name=String(b.d[C.BANK]||'').toLowerCase();
+    const row=String(b.ri);
+    let score=-1;
+    if(isNum){
+      if(row===val)score=0; else if(row.startsWith(val))score=1; else if(row.includes(val))score=2;
+    }
+    if(score<0){
+      if(name.startsWith(val))score=(score<0?1:Math.min(score,1));
+      else if(name.includes(val))score=(score<0?3:score);
+    }
+    return {b,score};
+  }).filter(x=>x.score>=0).sort((a,b)=>a.score-b.score||a.b.ri-b.b.ri).slice(0,12);
+  searchMatches=scored.map(x=>x.b);
+  searchSel=-1;
+  if(!searchMatches.length){dd.innerHTML='<div class="search-item search-empty">No match</div>';dd.classList.remove('hidden');return;}
+  dd.innerHTML=searchMatches.map((b,i)=>{
+    const grp=isPriorityBank(b.ri)?' · PRIORITY':isParked(b.ri)?' · parked':isDeclinedSheet(b.ri)?' · declined':'';
+    return '<div class="search-item" data-i="'+i+'" onclick="pickSearch('+i+')">Row '+b.ri+' · '+esc(String(b.d[C.BANK]||''))+'<span class="search-grp">'+grp+'</span></div>';
+  }).join('');
+  dd.classList.remove('hidden');
+}
+function searchKey(e){
+  if(e.key==='ArrowDown'){e.preventDefault();searchSel=Math.min(searchSel+1,searchMatches.length-1);highlightSearch();}
+  else if(e.key==='ArrowUp'){e.preventDefault();searchSel=Math.max(searchSel-1,0);highlightSearch();}
+  else if(e.key==='Enter'){e.preventDefault();pickSearch(searchSel>=0?searchSel:0);}
+  else if(e.key==='Escape'){el('search-dropdown').classList.add('hidden');}
+}
+function highlightSearch(){
+  document.querySelectorAll('#search-dropdown .search-item').forEach((el,i)=>{
+    el.classList.toggle('sel',i===searchSel);
+    if(i===searchSel)el.scrollIntoView({block:'nearest'});
+  });
+}
+function pickSearch(i){
+  const b=searchMatches[i];if(!b)return;
+  el('search-dropdown').classList.add('hidden');
+  el('search').value='';
+  searchMatches=[];
+  jumpToBank(b.ri);
+}
+// Jump to an exact bank by row, switching filter group if needed so it always shows
+function jumpToBank(ri){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  // Pick a filter group that will contain this bank
+  let group='';
+  if(isParked(ri))group='parked';
+  else if(isDeclinedSheet(ri)||hasInterest(ri)||isApptHeld(ri))group='set-aside';
+  el('f-status').value=group;
+  buildNavList();
+  let idx=navList.findIndex(x=>x.ri===ri);
+  if(idx<0){
+    // Fallback: force-include by clearing search filter and rebuilding
+    el('search').value='';buildNavList();
+    idx=navList.findIndex(x=>x.ri===ri);
+  }
+  if(idx>=0){navIdx=idx;listDirty=false;updateNavCounter();showCurrentBank();toast('Jumped to '+String(b.d[C.BANK]||''),'success');}
+  else{toast('Bank not found in any list','error');}
+}
+function onFilter(){navIdx=0;el('search').value='';el('search-dropdown').classList.add('hidden');applyFilters(false);}
+function priActive(ri,calledSet){
+  if(!isPriorityBank(ri))return false;
+  if(calledSet.has(ri))return false; // already logged today
+  // A future app-follow-up date on any lead defers this bank until that date
+  const today=workDateDisplay();
+  for(const r of ['CEO','CRA','CFO']){
+    const x=getAFU(ri,r);
+    if(x&&x.date){try{if(new Date(x.date)>new Date(today))return false;}catch{}}
+  }
+  return true;
+}
+function findSmartStartIdx(){
+  // If the user marked where they stopped on a PREVIOUS real day, resume from the
+  // bank right after it. Compare against the real calendar date, not the app work-date.
+  if(stopMark&&stopMark.ri&&stopMark.date!==realToday()){
+    const markPos=navList.findIndex(b=>b.ri===stopMark.ri);
+    if(markPos>=0){
+      // Next bank after the marked one; wrap to 0 if it was the last
+      return markPos+1<navList.length?markPos+1:0;
+    }
+    // Marked bank not in current list (filtered out) -> next higher row number
+    let best=-1;
+    navList.forEach((b,idx)=>{if(b.ri>stopMark.ri&&(best<0||b.ri<navList[best].ri))best=idx;});
+    if(best>=0)return best;
+  }
+  return 0;
+}
+function updateNavCounter(){
+  const total=navList.length;
+  st('nav-counter',total?'Bank '+(navIdx+1)+' of '+total:'No banks');
+  el('btn-prev').disabled=total===0;
+  el('btn-next').disabled=total===0;
+}
+
+function prevBank(){
+  if(navList.length===0)return;
+  const curRi=navList[navIdx]?navList[navIdx].ri:null;
+  if(listDirty){buildNavList();listDirty=false;if(curRi!=null){const k=navList.findIndex(b=>b.ri===curRi);if(k>=0)navIdx=k;}}
+  navIdx=(navIdx-1+navList.length)%navList.length;
+  updateNavCounter();showCurrentBank();
+}
+function nextBank(){
+  if(navList.length===0)return;
+  const curRi=navList[navIdx]?navList[navIdx].ri:null;
+  if(listDirty){buildNavList();listDirty=false;if(curRi!=null){const k=navList.findIndex(b=>b.ri===curRi);if(k>=0)navIdx=k;}}
+  navIdx=(navIdx+1)%navList.length;
+  updateNavCounter();showCurrentBank();
+}
+
+function showCurrentBank(){
+  const container=el('bank-view');
+  if(!navList.length){container.innerHTML='<div class="loading">No banks match your filter.</div>';return;}
+  const b=navList[navIdx];
+  container.innerHTML='';
+  container.appendChild(buildBankView(b));
+  container.scrollTop=0;
+}
+
+function buildBankView(b){
+  const ri=b.ri,d=b.d;
+  const declined=isDeclined(ri),decToday=isDeclinedToday(ri);
+  const called=bankCalledToday(ri),complete=bankComplete(ri),incomplete=bankIncomplete(ri);
+  const hasSOS=Object.keys(flags).some(k=>k.startsWith(bankId(ri)+'__')&&!flags[k].undone);
+  const hasInt=logsForDate(ri).some(l=>l.outcome==='Expressed Interest')||['CEO','CRA','CFO'].some(r=>d[RC[r].outcome]==='Expressed Interest');
+  const pending=pendingRoles(ri);
+
+  let badges='';
+  if(decToday)badges+='<span class="badge badge-red">Declined today</span>';
+  else if(declined)badges+='<span class="badge badge-red">Declined</span>';
+  if(isApptHeld(ri))badges+='<span class="badge badge-green">Appt held</span>';
+  else if(complete)badges+='<span class="badge badge-amber">Complete</span>';
+  else if(incomplete)pending.forEach(r=>{badges+='<span class="badge badge-amber">'+r+' pending</span>';});
+  else if(called){badges+='<span class="badge badge-green">Called today</span>';pending.forEach(r=>{badges+='<span class="badge badge-amber">'+r+' pending</span>';});}
+  if(hasSOS)badges+='<span class="badge badge-red">SOS</span>';
+  if(hasInt&&!isApptHeld(ri))badges+='<span class="badge badge-green">Interest</span>';
+
+  const emails=['CEO','CRA','CFO'].map(r=>{const dt=effEmailDate(d,r);return dt?r+': '+dt:'';}).filter(Boolean);
+  const emailRow=emails.length?'<div class="bank-email-row">📧 '+emails.join(' · ')+'</div>':'';
+
+  const div=document.createElement('div');
+  div.innerHTML=`
+    <div class="bank-header">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between">
+        <div>
+          <div class="bank-title">${esc(d[C.BANK])}</div>
+          <div class="bank-meta"><span class="tz-chip tz-${tzRank(ri)}">${tzLabel(ri)}</span>Row ${ri} · ${[d[C.CITY],d[C.STATE]].filter(Boolean).join(', ')}${d[C.REG]?' · '+d[C.REG]:''}${d[C.AA]?' · AA: '+String(d[C.AA]).trim():''}</div>
+          ${d[C.HQ]?buildHQRow(ri,String(d[C.HQ])):''}
+          ${isFUBank(ri)?'<div class="fu-tag-row"><span class="badge" style="background:var(--tag-followup-bg);color:var(--tag-followup);border:0.5px solid var(--tag-followup-border);font-weight:600">FOLLOW-UP</span> <span style="font-size:12px;color:var(--text3)">log through any lead\'s Log button — it updates both sheets</span></div>':''}
+          ${emailRow}
+        </div>
+        <div class="bank-badges">${isPriorityBank(ri)?'<span class="badge" style="background:var(--tag-priority-bg);color:var(--tag-priority);border:0.5px solid var(--tag-priority-border);font-weight:600">PRIORITY</span>':''}${hasNoPolicy(ri)?'<span class="badge" style="background:var(--surface2);color:var(--text2);border:0.5px solid var(--border);font-weight:500">🔒 NO DIRECT #</span>':''}${hasNoEmp(ri)?'<span class="badge" style="background:var(--surface2);color:var(--text2);border:0.5px solid var(--border);font-weight:500">🚫 NO EMPLOYEE INFO</span>':''}${badges}${hasNoPolicy(ri)?'<button class="hq-btn" onclick="toggleNoPolicy('+ri+')" title="Bank policy: will not give out the lead direct number">🔒 Policy tagged</button>':'<button class="hq-btn" onclick="toggleNoPolicy('+ri+')" title="Bank policy: will not give out the lead direct number">🔒 No-direct policy</button>'}<button class="hq-btn" onclick="toggleNoEmp(${ri})" title="Bank policy: will not give any employee information">${hasNoEmp(ri)?'🚫 No-emp-info tagged':'🚫 No-emp-info policy'}</button><button class="hq-btn" onclick="setStopHere(${ri})" title="Resume from the next bank tomorrow">${stopMark&&stopMark.ri===ri?'📍 Stopped here':'📍 Stop here'}</button><button class="hq-btn" onclick="toggleParked(${ri})">${isParked(ri)?'↩ Back to main list':'📂 Move off main list'}</button></div>
+      </div>
+    </div>
+    <div class="leads-grid">${['CEO','CRA','CFO'].map(r=>buildLeadCard(ri,d,r,declined)).join('')}</div>
+  `;
+  return div;
+}
+
+function buildCard(b){
+  const ri=b.ri,d=b.d,declined=isDeclined(ri),decToday=isDeclinedToday(ri),called=bankCalledToday(ri);
+  const complete=bankComplete(ri),incomplete=bankIncomplete(ri);
+  const hasSOS=Object.keys(flags).some(k=>k.startsWith(bankId(ri)+'__')&&!flags[k].undone);
+  const hasInt=logsForDate(ri).some(l=>l.outcome==='Expressed Interest')||['CEO','CRA','CFO'].some(r=>d[RC[r].outcome]==='Expressed Interest');
+  const pending=pendingRoles(ri);
+  let badges='';
+  if(decToday)badges+='<span class="badge badge-red">Declined today</span>';
+  else if(declined)badges+='<span class="badge badge-red">Declined</span>';
+  if(complete)badges+='<span class="badge badge-amber">Complete</span>';
+  else if(incomplete){pending.forEach(r=>{badges+='<span class="badge badge-pending">'+r+' pending</span>';});}
+  else if(called){badges+='<span class="badge badge-green">Called today</span>';pending.forEach(r=>{badges+='<span class="badge badge-pending">'+r+' pending</span>';});}
+  if(hasSOS)badges+='<span class="badge badge-red">SOS</span>';
+  if(hasInt)badges+='<span class="badge badge-green">Interest</span>';
+  const card=document.createElement('div');
+  card.className='bank-card'+(hasSOS?' has-sos':'')+(hasInt?' has-interest':'')+(complete?' is-complete':'')+(declined?' is-declined':'');
+  card.id='card-'+ri;
+  card.innerHTML='<div class="bank-card-header" onclick="toggleCard('+ri+')"><div class="bank-left"><span class="row-num">Row '+ri+'</span><div><div class="bank-name">'+esc(d[C.BANK])+'</div><div class="bank-meta">'+[d[C.CITY],d[C.STATE]].filter(Boolean).join(', ')+(d[C.REG]?' · '+d[C.REG]:'')+(d[C.AA]?' · '+String(d[C.AA]).trim():'')+'</div></div></div><div class="bank-right">'+badges+'<span class="chevron" id="chev-'+ri+'">▼</span></div></div><div class="bank-body" id="body-'+ri+'"></div>';
+  return card;
+}
+
+function toggleCard(ri){
+  if(openRI&&openRI!==ri){const pb=el('body-'+openRI),pc=el('chev-'+openRI);if(pb){pb.classList.remove('open');pb.innerHTML='';}if(pc)pc.classList.remove('open');}
+  const body=el('body-'+ri),chev=el('chev-'+ri),isOpen=body.classList.contains('open');
+  if(isOpen){body.classList.remove('open');body.innerHTML='';chev.classList.remove('open');openRI=null;}
+  else{body.classList.add('open');chev.classList.add('open');openRI=ri;renderBody(ri);}
+}
+
+function renderBody(ri){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  const d=b.d,body=el('body-'+ri),dec=isDeclined(ri);
+  const emails=['CEO','CRA','CFO'].map(r=>{const dt=effEmailDate(d,r);return dt?r+': '+dt:'';}).filter(Boolean);
+  const emailRow=emails.length?'<div class="email-row">📧 Most recent email — '+emails.join(' · ')+'</div>':'';
+  const grid='<div class="leads-grid">'+['CEO','CRA','CFO'].map(r=>buildLeadCard(ri,d,r,dec)).join('')+'</div>';
+  body.innerHTML='<div style="padding:12px 14px">'+emailRow+grid+'</div>';
+}
+
+function formatNotes(notes){
+  // Ensure each dated entry starts on its own line for readability.
+  // Insert a newline before any date pattern M/D/YYYY that isn't already at line start.
+  let s=String(notes).replace(/\r/g,'');
+  // Add newline before dates like 6/9/2026 or 12/9/2025 when preceded by other text
+  s=s.replace(/([^\n])\s*(\b\d{1,2}\/\d{1,2}\/\d{2,4}\b)/g,'$1\n$2');
+  // Collapse 3+ newlines to 2
+  s=s.replace(/\n{3,}/g,'\n\n');
+  return s.trim();
+}
+
+function buildLeadCard(ri,d,role,bankDeclined){
+  const rc=RC[role],name=d[rc.name]||'—',phones=parsePhones(d[rc.phone]).filter(p=>!isNumHidden(ri,role,p));
+  const outcome=d[rc.outcome]||'',notes=d[rc.notes]||'',recent=d[rc.recent]?fmtSheetDate(d[rc.recent]):'',times=d[rc.times]||'0';
+  const ea=rc.ea!=null?(d[rc.ea]||''):'';
+  const rLogs=logsForDate(ri,role),appCalled=rLogs.some(l=>l.called);
+  const sheetToday=sheetWorkedToday(ri,role);
+  const called=appCalled||sheetToday;
+  const hasSOS=phones.some(p=>isPhoneBad(ri,role,p));
+  const hasInt=rLogs.some(l=>l.outcome==='Expressed Interest')||outcome==='Expressed Interest';
+  const oc=OC[outcome]||'';
+  const statusTag=called?'<span class="complete-tag">Called</span>'+(sheetToday&&!appCalled?'<span class="sheet-tag" title="Read from the sheet">from sheet</span>':''):'<span class="pending-tag">Pending</span>';
+  // Email log display
+  const eLog=getEmailLog(ri,role);
+  const emailBadge=eLog?'<div class="email-log-badge">📧 '+esc(eLog.date)+(eLog.recipient?' to '+esc(eLog.recipient):'')+'</div>':'';
+
+  let attn='';
+  // Per-number counters for attention flags
+  phones.forEach(ph=>{
+    const cnt=getCallCount(ri,role,ph);
+    // Check outcomes for this specific number
+    const phLogs=rLogs.filter(l=>l.called&&l.phone===ph);
+    const noAns=phLogs.filter(l=>l.outcome==='No Answer').length;
+    const conf=phLogs.filter(l=>['Left Message','Follow-up','Email requested/ Follow-up','Check Back Later'].includes(l.outcome)).length;
+    if(noAns>=2)attn+='<div class="attention-flag">'+esc(phoneBase(ph))+' — 2x no answer</div>';
+    if(conf>=7)attn+='<div class="attention-flag">'+esc(phoneBase(ph))+' — 7x attempted</div>';
+  });
+
+  let phonesHtml='';
+  if(phones.length){
+    phonesHtml='<div class="phones">'+phones.map((ph,pi)=>{
+      const bad=isPhoneBad(ri,role,ph),reason=bad?getBadReason(ri,role,ph):'',cnt=getCallCount(ri,role,ph);
+      const base=phoneBase(ph),direct=isDirectLine(ri,role,ph),sevenx=is7xFlag(ri,role,ph);
+      // Pull out a "(Hajra...)" tag so it shows as a badge, not as raw suffix text
+      const hajraM=String(ph).match(/\(hajra[^)]*\)/i);
+      const isHajra=!!hajraM;
+      const hajraTitle=hajraM?hajraM[0].replace(/[()]/g,''):'';
+      let sfx=phoneSuffix(ph);
+      if(isHajra)sfx=sfx.replace(/\(hajra[^)]*\)/i,'').trim();
+      // Read-only status chip next to each number; copy stays live
+      let chip='';
+      if(isHajra)chip+='<span class="status-chip chip-hajra" title="'+esc(hajraTitle)+'">HAJRA</span>';
+      if(direct)chip+='<span class="direct-badge">☎ direct</span>';
+      if(sevenx)chip+='<span class="status-chip chip-7x">7x</span>';
+      else if(bad)chip+='<span class="status-chip chip-bad">'+esc(reason||'flagged')+'</span>';
+      return '<div class="phone-row"><div class="phone-info">'
+        +'<span class="phone-num'+(bad&&!sevenx?' bad':'')+(bad&&flags[getFlagKey(ri,role,ph)]?.scope==='sheet'?' struck':'')+'" onclick="copyPhone(\''+esc(base)+'\',this)" title="Click to copy">'+esc(base)+'</span>'
+        +chip
+        +(sfx?'<span class="phone-suffix">'+esc(sfx)+'</span>':'')
+        +(cnt>0?'<span class="call-cnt">'+cnt+'x</span>':'')+'</div>'
+        +'<div class="phone-btns">'
+        +'<button class="btn-copy" onclick="copyPhone(\''+esc(base)+'\',this)">📋</button>'
+        +(bad?'<button class="btn-mini" onclick="undoNumFlag('+ri+',\''+role+'\',\''+esc(base)+'\')" title="Remove this flag">↩ undo flag</button>':'')
+        +(bad?'<button class="btn-mini btn-mini-danger" onclick="deleteFlaggedNum('+ri+',\''+role+'\',\''+esc(base)+'\')" title="Delete this dead number">🗑 delete</button>':'')
+        +'</div></div>';
+    }).join('')+'</div>';
+  }else{phonesHtml='<div class="no-phone">No phone on file</div>';}
+
+  const notesHtml=notes?'<div class="lead-notes">'+esc(formatNotes(notes))+'</div>':'';
+
+  let todayHtml='';
+  if(rLogs.length){
+    todayHtml='<div class="today-logs">'+rLogs.map(l=>'<div class="today-log"><span class="outcome-chip '+(OC[l.outcome]||'')+'">'+esc(l.outcome)+'</span>'
+      +(l.who&&l.who!=='NO CONTACT'?'<span style="font-size:10px;color:var(--text3)">'+esc(l.who)+'</span>':'')
+      +'<span class="log-note-text">'+esc(l.noteText||'')+'</span>'
+      +'<button class="btn-undo" onclick="openUndoLog('+ri+',\''+role+'\',\''+l.id+'\')">↩ Undo</button></div>').join('')
+      +'<button class="btn-del-all" onclick="openUndoAllLogs('+ri+',\''+role+'\')">Undo all today for '+role+'</button></div>';
+  }
+
+  const leadDNE=isDNE(ri,role);
+  // Lead-level flag (app only, manual text)
+  const lf=getLeadFlag(ri,role);
+  const leadFlagHtml=lf?'<div class="attention-flag" style="background:var(--red-bg);color:var(--red);border-color:var(--red-border)">⚑ '+esc(lf.text)+' <button class="btn-sm" style="font-size:10px;padding:1px 6px;margin-left:6px" onclick="unflagLead('+ri+',\''+role+'\')">↩</button></div>':'';
+  const chg=leadChanged(ri,role);
+  const changeHtml=chg?'<div class="attention-flag" style="background:var(--amber-bg);color:var(--amber);border-color:var(--amber-border)">✎ '+esc(chg)+' updated on the sheet since your last call — recall this lead</div>':'';
+  // App-only numbers for this lead
+  let appNumHtml='';
+  const anums=getAppNums(ri,role);
+  if(anums.length){
+    appNumHtml='<div class="phones" style="margin-top:2px">'+anums.map((n,i)=>{
+      return '<div class="phone-row"><div class="phone-info"><span class="phone-num" onclick="copyPhone(\''+esc(phoneBase(n))+'\',this)" title="Click to copy">'+esc(phoneBase(n))+'</span>'
+        +(phoneSuffix(n)?'<span class="phone-suffix">'+esc(phoneSuffix(n))+'</span>':'')
+        +'<span class="call-cnt" style="margin-left:0;margin-top:2px;width:fit-content">app only</span></div>'
+        +'<div class="phone-btns"><button class="btn-copy" onclick="copyPhone(\''+esc(phoneBase(n))+'\',this)">📋</button>'
+        +'<button class="btn-sm" style="font-size:10px" onclick="removeAppNum('+ri+',\''+role+'\','+i+')">✕</button></div></div>';
+    }).join('')+'</div>';
+  }
+  // App follow-up banner
+  let afuHtml='';
+  const afu=getAFU(ri,role);
+  if(afu){
+    const today=workDateDisplay();
+    if(afu.date===today){
+      const cnt=afu.dials[today]||0;
+      afuHtml='<div class="afu-banner">📅 Follow-up due today · '+cnt+' dials today'
+        +'<div style="display:flex;gap:6px;margin-top:6px">'
+        +'<button class="btn-sm" style="background:var(--blue);color:#fff;border:none" onclick="afuDial('+ri+',\''+role+'\')">+1 dial</button>'
+        +'<button class="btn-sm" onclick="openAFUModal('+ri+',\''+role+'\')">Add today\'s note</button>'
+        +'</div></div>';
+    }else{
+      afuHtml='<div class="afu-chip">📅 Follow-up: '+esc(afu.date)+'</div>';
+    }
+  }
+  let bottomAction='';
+  const offCall=isOffCallList(ri,role);
+  if(offCall){
+    bottomAction='<div class="declined-note">🚫 Off call list — Do not call / opt-out</div>'
+      +'<button class="btn-undo-decline" onclick="restoreToCallList('+ri+',\''+role+'\')">↩ Restore to call list</button>';
+  }else if(leadDNE){
+    const inRep=dne[dneKey(ri,role)]?.inReport;
+    const reason=dne[dneKey(ri,role)]?.reason;
+    bottomAction='<div class="declined-note">Not in bank system'+(reason?': '+esc(reason):'')+'</div>'
+      +'<button class="btn-undo-decline" onclick="toggleDNE('+ri+',\''+role+'\')">↩ Restore lead</button>'
+      +'<button class="btn-log-general" onclick="toggleDNEReport('+ri+',\''+role+'\')">'+(inRep?'✓ In report (tap to remove)':'Add to report')+'</button>';
+  }else if(isApptHeld(ri)){
+    bottomAction='<div class="appt-held-note">Appointment held — bank complete</div>';
+  }else if(bankDeclined){
+    bottomAction='<div class="declined-note">Bank declined — calling stopped</div>';
+    if(isDeclinedToday(ri))bottomAction+='<button class="btn-undo-decline" onclick="openUndoDecline('+ri+')">↩ Undo decline</button>';
+  }else{
+    bottomAction='<button class="btn-log-call" onclick="openLeadLog('+ri+',\''+role+'\')">Log</button>';
+    if(hasInt)bottomAction+='<button class="btn-appt-held" onclick="setApptHeld('+ri+')">✓ Appointment held</button>';
+    bottomAction+='<button class="btn-log-general" onclick="addNumber('+ri+',\''+role+'\')">+ Add number</button>';
+    bottomAction+='<button class="btn-log-general" onclick="editNumbers('+ri+',\''+role+'\')">✎ Edit numbers</button>';
+    bottomAction+='<button class="btn-log-general" onclick="editLeadName('+ri+',\''+role+'\')">✎ Edit name</button>';
+    bottomAction+='<button class="btn-log-general" onclick="addExtension('+ri+',\''+role+'\')">+ Ext / option</button>';
+    bottomAction+='<button class="btn-log-general" onclick="takeOffCallList('+ri+',\''+role+'\')">🚫 Take off call list</button>';
+  }
+
+  const emailBtn='';
+  return '<div class="lead-card'+(hasSOS?' sos':'')+(hasInt?' interest':'')+(called?' complete-lead':'')+(bankDeclined?' declined-lead':'')+(leadDNE?' declined-lead':'')+(offCall?' declined-lead offcall-lead':'')+'"><div class="lead-header"><div class="lead-header-left"><div class="lead-role-row"><span class="role-tag">'+role+'</span>'+statusTag+(outcome?'<span class="outcome-chip '+oc+'">'+esc(outcome)+'</span>':'')+'</div><div class="lead-name" onclick="editLeadName('+ri+',\''+role+'\')" title="Click to edit the name (writes to the sheet)" style="cursor:pointer">'+esc(name)+'</div>'+(rc.ea!=null?'<div class="lead-ea" onclick="editEA('+ri+',\''+role+'\')" title="Click to edit EA" style="cursor:pointer">'+(ea?'EA: '+esc(ea):'<span style="color:var(--text3)">+ Add EA</span>')+'</div>':'')+'</div><div class="lead-header-right">'+(recent?'Last: '+recent+'<br>':'')+times+'x total</div></div><div class="lead-body">'+afuHtml+leadFlagHtml+changeHtml+attn+phonesHtml+appNumHtml+notesHtml+todayHtml+bottomAction+emailBtn+'</div></div>';
+}
+
+// UNIFIED NUMBER MODAL
+function openNumModal(ri,role){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  const d=b.d,rc=RC[role],phones=parsePhones(d[rc.phone]);
+  numCtx={ri,role,phones};
+  st('nm-title',d[C.BANK]+' — '+role+': '+(d[rc.name]||'—'));
+  const regStr=d[C.REG]?d[C.REG]:'';
+  const aaStr=d[C.AA]?' · AA: '+d[C.AA]:'';
+  const _eff=effEmailDate(d,role);const initStr=_eff?' · Email sent: '+_eff:'';
+  const hqStr=d[C.HQ]?' · 🏢 HQ: '+String(d[C.HQ]):'';
+  st('nm-sub','Row '+ri+' · '+regStr+aaStr+initStr+hqStr);
+
+  let html='';
+  if(!phones.length){
+    html='<div class="warn-box">No phone numbers on file for this lead.</div>';
+    html+='<div class="modal-actions" style="margin-top:14px"><button class="btn-cancel" onclick="closeNumModal()">Close</button></div>';
+    el('nm-body').innerHTML=html;el('num-modal').classList.remove('hidden');return;
+  }
+
+  // Find first UNFLAGGED number to auto-select (fall back to 0)
+  let autoPick=phones.findIndex(ph=>!isPhoneBad(ri,role,ph));
+  if(autoPick<0)autoPick=phones.findIndex(ph=>is7xFlag(ri,role,ph));
+  if(autoPick<0)autoPick=0;
+
+  // ── SECTION 1: pick which number you are logging ──
+  html+='<div class="form-group"><label>Which number did you call?</label><select id="nm-pick" onchange="updateBlackboxBtn()">';
+  phones.forEach((ph,pi)=>{
+    const bad=isPhoneBad(ri,role,ph);
+    html+='<option value="'+pi+'"'+(pi===autoPick?' selected':'')+'>'+esc(phoneBase(ph))+(phoneSuffix(ph)?' '+esc(phoneSuffix(ph)):'')+(is7xFlag(ri,role,ph)?' (7x, still callable)':bad?' (flagged)':'')+'</option>';
+  });
+  html+='</select></div>';
+
+  // ── Per-number controls: add extension/option + black-box toggle + manual 2x/7x ──
+  html+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin:-4px 0 12px">';
+  html+='<button type="button" class="btn-sm" onclick="addExtOpt(\'ext\')">+ Add extension to this number</button>';
+  html+='<button type="button" class="btn-sm" onclick="addExtOpt(\'opt\')">+ Add option to this number</button>';
+  html+='<button type="button" class="btn-sm" id="nm-blackbox-btn" onclick="toggleBlackbox()">📦 Mark as black box</button>';
+  html+='<button type="button" class="btn-sm" style="background:var(--red-bg);color:var(--red);border-color:var(--red-border)" onclick="manualRuleFlag(\'2x\')">⚑ Flag 2x</button>';
+  html+='<button type="button" class="btn-sm" style="background:var(--red-bg);color:var(--red);border-color:var(--red-border)" onclick="manualRuleFlag(\'7x\')">⚑ Flag 7x</button>';
+  html+='<button type="button" class="btn-sm" style="background:var(--blue-bg);color:var(--blue);border-color:var(--blue-border)" onclick="setAppFollowup()">📅 Set follow-up</button>';
+  html+='</div>';
+
+  // ── SECTION 2: ONE who, ONE outcome, ONE note ──
+  html+='<div class="form-grid">';
+  html+='<div class="form-group"><label>Who answered</label><select id="nm-who"><option value="NO CONTACT">NO CONTACT</option><option value="GK">GK</option><option value="EA">EA</option><option value="CEO">CEO</option><option value="CRA">CRA</option><option value="CFO">CFO</option></select></div>';
+  html+='<div class="form-group"><label>Outcome</label><select id="nm-outcome" onchange="checkDeclineWarnSingle()"><option>No Answer</option><option>Left Message</option><option>Check Back Later</option><option>Expressed Interest</option><option>Follow-up</option><option>Email requested/ Follow-up</option><option>Decline</option><option>Wrong Contact</option><option>Wrong Number</option><option>Not the bank\'s fund type</option><option>Open</option><option>Request To Unsubscribe</option></select></div>';
+  html+='<div class="form-group"><label>Spoke to</label><input type="text" id="nm-spoke" placeholder="Name, title"/></div>';
+  html+='<div class="form-group"><label>New number</label><input type="text" id="nm-newnum" placeholder="e.g. 806.771.3227"/></div>';
+  html+='</div>';
+  html+='<div class="form-group"><label>Notes</label><textarea id="nm-notes" rows="2" placeholder="What happened?"></textarea></div>';
+  html+='<div id="nm-decline-warn" class="warn-box hidden">Decline will stop ALL calling at this bank.</div>';
+
+  // ── SECTION 3: flag this number (app-only or sheet) ──
+  html+='<div class="num-section" style="margin-top:6px"><div style="padding:10px">';
+  html+='<div class="form-group" style="margin-bottom:8px"><label>Flag this number as bad?</label><select id="nm-flag"><option value="">— number is fine</option>';
+  FLAG_OPTIONS.forEach(f=>{html+='<option>'+f+'</option>';});
+  html+='</select></div>';
+  html+='<div style="display:flex;gap:14px;font-size:12px;color:var(--text2)">';
+  html+='<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="nm-flagscope" value="app" checked style="width:14px;height:14px"/> App only (red, still copyable)</label>';
+  html+='<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="nm-flagscope" value="sheet" style="width:14px;height:14px"/> App + strike on sheet</label>';
+  html+='</div></div></div>';
+
+  // ── SECTION 4: quick-dial other numbers (no contact) ──
+  if(phones.length>1){
+    html+='<div class="num-section" style="margin-top:6px"><div style="padding:10px">';
+    html+='<div style="font-size:11px;color:var(--text3);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Also dialed (no contact) — counts as a dial only</div>';
+    phones.forEach((ph,pi)=>{
+      html+='<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text2);padding:4px 0;cursor:pointer"><input type="checkbox" class="nm-quickdial" data-pi="'+pi+'" style="width:15px;height:15px"/> '+esc(phoneBase(ph))+'</label>';
+    });
+    html+='</div></div>';
+  }
+
+  // Shared number notice
+  const otherRoles=['CEO','CRA','CFO'].filter(r=>r!==role);
+  const sharedNums={};
+  phones.forEach(ph=>{
+    const digits=phoneDigits(ph);
+    otherRoles.forEach(r=>{
+      const otherPhones=parsePhones(d[RC[r].phone]);
+      if(otherPhones.some(op=>phoneDigits(op)===digits)){if(!sharedNums[ph])sharedNums[ph]=[];sharedNums[ph].push(r);}
+    });
+  });
+  if(Object.keys(sharedNums).length){
+    html+='<div class="shared-num-notice"><strong>Shared numbers:</strong><br>';
+    Object.entries(sharedNums).forEach(([ph,roles])=>{html+=esc(phoneBase(ph))+' is also listed for '+roles.join(', ')+'.<br>';});
+    html+='</div>';
+  }
+
+  // Recent notes
+  const existingNotes=String(d[rc.notes]||'');
+  if(existingNotes.trim()){
+    const noteLines=existingNotes.trim().split('\n').slice(-3);
+    html+='<div class="modal-notes-preview"><div class="mnp-label">Recent notes</div><div class="mnp-text">'+esc(noteLines.join('\n'))+'</div></div>';
+  }
+
+  html+='<div class="modal-actions" style="margin-top:14px"><button class="btn-primary" onclick="saveNumModal()">Save</button><button class="btn-cancel" onclick="closeNumModal()">Cancel</button></div>';
+  el('nm-body').innerHTML=html;
+  el('num-modal').classList.remove('hidden');
+  updateBlackboxBtn();
+}
+
+function checkDeclineWarnSingle(){
+  const o=el('nm-outcome')?.value||'';
+  el('nm-decline-warn')?.classList.toggle('hidden',o!=='Decline');
+}
+
+function addExtOpt(kind){
+  if(!numCtx)return;
+  const {ri,role,phones}=numCtx;
+  const pi=parseInt(el('nm-pick')?.value||'0');
+  const ph=phones[pi];if(!ph)return;
+  const base=phoneBase(ph);
+  const val=prompt('Enter the '+(kind==='ext'?'extension':'option')+' for '+base+':');
+  if(val===null||!val.trim())return;
+  const label=kind==='ext'?'ext':'opt';
+  const newPhVal=base+' '+label+' '+val.trim();
+  const b=banks.find(x=>x.ri===ri),d=b.d,rc=RC[role];
+  const allPhones=parsePhones(d[rc.phone]);
+  const idx=allPhones.findIndex(p=>phoneDigits(p)===phoneDigits(ph));
+  if(idx>=0){allPhones[idx]=newPhVal;d[rc.phone]=allPhones.join('; ');}
+  const dateStr=workDateDisplay();
+  const existingNotes=String(d[rc.notes]||'');
+  const noteTxt=(kind==='ext'?'new extension for ':'new option for ')+base;
+  const noteEntry=existingNotes.includes(dateStr)?noteTxt:(dateStr+'\n'+noteTxt);
+  d[rc.notes]=existingNotes?existingNotes+'\n'+noteEntry:noteEntry;
+  writeSheet([{row:ri,col:rc.phone,value:d[rc.phone]},{row:ri,col:rc.notes,value:d[rc.notes]}]);
+  numCtx.phones=parsePhones(d[rc.phone]);
+  toast('Added '+label+' to '+base,'success');
+  openNumModal(ri,role);
+}
+
+let sfCtx=null;
+function openStandaloneFlag(ri,role,pi){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  const d=b.d,rc=RC[role],phones=parsePhones(d[rc.phone]);
+  const ph=phones[pi];if(!ph)return;
+  sfCtx={ri,role,ph};
+  st('nm-title',d[C.BANK]+' | Flag number');
+  st('nm-sub',role+': '+(d[rc.name]||'')+' | '+phoneBase(ph)+' | No call will be logged');
+  let html='';
+  html+='<div style="font-size:11px;color:var(--text2);background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--radius);padding:7px 10px;margin-bottom:12px">Flags this number only. No call, no dial, no outcome logged. Use + Log without number if you also need to add a note for this lead.</div>';
+  html+='<div class="form-group"><label>Why is this number bad?</label><select id="sf-issue">';
+  html+='<option value="2x no answer (black box)">2x no answer (black box)</option>';
+  html+='<option value="7x no answer (reached bank/lead)">7x no answer (reached bank/lead)</option>';
+  FLAG_OPTIONS.forEach(f=>{html+='<option>'+f+'</option>';});
+  html+='</select></div>';
+  html+='<div style="display:flex;gap:14px;font-size:12px;color:var(--text2);margin-bottom:10px">';
+  html+='<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="sf-scope" value="app" checked style="width:14px;height:14px"/> App only</label>';
+  html+='<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="sf-scope" value="sheet" style="width:14px;height:14px"/> App + strike on sheet</label>';
+  html+='</div>';
+  html+='<div class="modal-actions"><button class="btn-flag" onclick="saveStandaloneFlag()">⚑ Flag number</button><button class="btn-cancel" onclick="closeNumModal()">Cancel</button></div>';
+  el('nm-body').innerHTML=html;
+  el('num-modal').classList.remove('hidden');
+}
+function saveStandaloneFlag(){
+  if(!sfCtx)return;
+  const {ri,role,ph}=sfCtx;sfCtx=null;
+  const b=banks.find(x=>x.ri===ri),d=b.d,rc=RC[role];
+  const issue=el('sf-issue')?.value||'';
+  const scope=document.querySelector('input[name="sf-scope"]:checked')?.value||'app';
+  if(!issue)return;
+  const rule=issue.startsWith('2x')?'2x':issue.startsWith('7x')?'7x':undefined;
+  flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue,undone:false,called:false,date:workDate,scope,rule};
+  // Propagate to the SAME number listed on other leads at this bank
+  const digits=phoneDigits(ph);
+  if(digits){
+    for(const otherRole of ['CEO','CRA','CFO'].filter(r=>r!==role)){
+      const orc=RC[otherRole];
+      const matchPh=parsePhones(d[orc.phone]).find(op=>phoneDigits(op)===digits);
+      if(matchPh){
+        flags[getFlagKey(ri,otherRole,matchPh)]={ri,role:otherRole,phone:matchPh,issue,undone:false,called:false,sharedFrom:role,date:workDate,scope,rule};
+        if(scope==='sheet')strikethrough(ri,orc.phone,matchPh);
+      }
+    }
+  }
+  saveFlags();
+  if(scope==='sheet'){
+    // Note line + strikethrough + contact update, same as flagging through a log
+    const dateStr=workDateDisplay();
+    const existing=String(d[rc.notes]||'');
+    const line=phoneBase(ph)+' '+issue.replace(/\s*\([^)]*\)/g,'');
+    const entry=existing.includes(dateStr)?line:(dateStr+'\n'+line);
+    d[rc.notes]=existing?existing+'\n'+entry:entry;
+    writeSheet([{row:ri,col:rc.notes,value:d[rc.notes]}]);
+    strikethrough(ri,rc.phone,ph);
+    writeContactUpdate(ri,role,ph,issue,d,parsePhones(d[rc.phone]));
+  }
+  renderStats();closeNumModal();showCurrentBank();
+  toast(phoneBase(ph)+' flagged ('+(scope==='sheet'?'app + sheet':'app only')+')','success');
+}
+
+function manualRuleFlag(rule){
+  if(!numCtx)return;
+  const {ri,role,phones}=numCtx;
+  const pi=parseInt(el('nm-pick')?.value||'0');
+  const ph=phones[pi];if(!ph)return;
+  const issue=rule==='2x'?'2x no answer (black box)':'7x no answer (reached bank/lead)';
+  if(!confirm('Flag '+phoneBase(ph)+' as '+rule+'? App only, you handle the sheet note yourself.'))return;
+  flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue,undone:false,called:false,date:workDate,dateReal:realToday(),scope:'app',rule};
+  saveFlags();
+  toast(phoneBase(ph)+' flagged '+rule+' (app only)','success');
+  openNumModal(ri,role); // refresh modal to show flagged state
+}
+
+function toggleBlackbox(){
+  if(!numCtx)return;
+  const {ri,role,phones}=numCtx;
+  const pi=parseInt(el('nm-pick')?.value||'0');
+  const ph=phones[pi];if(!ph)return;
+  const key=bankId(ri)+'__'+role+'__'+phoneDigits(ph);
+  if(blackbox[key]){delete blackbox[key];}else{blackbox[key]=true;}
+  saveBlackbox();updateBlackboxBtn();
+  toast(blackbox[key]?'Marked as black box (2x rule)':'Unmarked','success');
+}
+function updateBlackboxBtn(){
+  if(!numCtx)return;
+  const {ri,role,phones}=numCtx;
+  const pi=parseInt(el('nm-pick')?.value||'0');
+  const ph=phones[pi];if(!ph)return;
+  const btn=el('nm-blackbox-btn');if(!btn)return;
+  if(isBlackbox(ri,role,ph)){btn.textContent='📦 Black box ✓';btn.style.background='var(--amber-bg)';btn.style.color='var(--amber)';}
+  else{btn.textContent='📦 Mark as black box';btn.style.background='';btn.style.color='';}
+}
+
+function promptEmailLog(ri,role){
+  const recipient=prompt('Who received the email? (name or title, leave blank to skip)');
+  if(recipient===null)return; // cancelled
+  setEmailLog(ri,role,workDateDisplay(),recipient.trim());
+}
+
+function toggleDispForm(pi){
+  const checked=el('nm-has-disp-'+pi)?.checked;
+  el('disp-form-'+pi)?.classList.toggle('hidden',!checked);
+}
+
+function setCalledState(pi,called){
+  el('cal-yes-'+pi).classList.toggle('active',called);
+  el('cal-no-'+pi).classList.toggle('active',!called);
+  el('called-form-'+pi).classList.toggle('hidden',!called);
+  el('notcalled-form-'+pi).classList.toggle('hidden',called);
+}
+
+function checkDeclineWarn(pi){
+  const o=el('nm-outcome-'+pi)?.value||'';
+  el('nm-decline-warn-'+pi)?.classList.toggle('hidden',o!=='Decline');
+}
+
+function closeNumModal(){el('num-modal').classList.add('hidden');numCtx=null;addNumCtx=null;}
+
+// ═══════════════ UNIFIED LEAD LOG PANEL (Option A) ═══════════════
+let llCtx=null;
+function closeLeadLog(){el('leadlog-modal').classList.add('hidden');llCtx=null;}
+function toggleStats(){
+  const bar=document.querySelector('.stats-bar');const t=el('stat-toggle');
+  bar.classList.toggle('expanded');
+  if(t)t.textContent=bar.classList.contains('expanded')?'less ▴':'more ▾';
+}
+function openLeadLog(ri,role){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  const d=b.d,rc=RC[role];
+  const phones=parsePhones(d[rc.phone]);
+  llCtx={ri,role,phones};
+  const bankName=String(d[C.BANK]||'');
+  const aa=C.AA!=null?String(d[C.AA]||''):'';
+  const emailDate=effEmailDate(d,role); // (d, role) — per-lead email date
+  const hq=d[C.HQ]?String(d[C.HQ]):'';
+
+  st('ll-title','Log · '+bankName);
+  st('ll-sub','Row '+ri+' · '+role+(d[rc.name]?' · '+esc(String(d[rc.name])):''));
+
+  // Context strip — everything you need while logging, so the covered header doesn't matter
+  let h='<div class="ll-context">';
+  h+='<span><b>Bank:</b> '+esc(bankName)+'</span>';
+  if(aa)h+='<span><b>AA:</b> '+esc(aa)+'</span>';
+  if(emailDate)h+='<span><b>Email:</b> '+esc(String(emailDate))+'</span>';
+  h+='<span><b>Times called:</b> '+(d[rc.times]||'0')+'</span>';
+  h+='</div>';
+
+  // HQ number (reference only — not dial-loggable here)
+  if(hq){
+    h+='<div class="ll-hq"><span>🏢 HQ '+esc(phoneBase(hq))+'</span>'
+      +'<button class="ll-copy" onclick="copyPhone(\''+esc(phoneBase(hq))+'\',this)">copy</button></div>';
+  }
+
+  // Per-number status rows
+  h+='<p class="ll-label">Numbers dialled</p>';
+  if(phones.length){
+    // Split into callable (clean + 7x) and red/bad (2x, wrong, disconnected)
+    const rowHtml=(ph,pi,dialedDefault)=>{
+      const base=phoneBase(ph),sfx=phoneSuffix(ph),direct=isDirectLine(ri,role,ph);
+      const f=flags[getFlagKey(ri,role,ph)];
+      let cur='ok';
+      if(f&&!f.undone){cur=f.rule==='7x'?'7x':f.rule==='2x'?'2x':(/wrong/i.test(f.issue)?'wrong':/discon/i.test(f.issue)?'disc':'wrong');}
+      return '<div class="ll-numrow">'
+        +'<div class="ll-numleft"><span class="ll-num">'+esc(base)+'</span>'
+        +(sfx?'<span class="phone-suffix">'+esc(sfx)+'</span>':'')
+        +'<label class="ll-dial"><input type="checkbox" class="ll-dialed" data-pi="'+pi+'"'+(dialedDefault?' checked':'')+'> dialled</label></div>'
+        +'<div class="ll-numright">'
+        +'<select class="ll-status" data-pi="'+pi+'">'
+          +'<option value="ok"'+(cur==='ok'?' selected':'')+'>OK</option>'
+          +'<option value="2x"'+(cur==='2x'?' selected':'')+'>2x no answer (black box)</option>'
+          +'<option value="7x"'+(cur==='7x'?' selected':'')+'>7x no answer (reached, still callable)</option>'
+          +FLAG_OPTIONS.map(function(fo){return '<option value="opt:'+esc(fo)+'"'+(f&&!f.undone&&f.issue===fo?' selected':'')+'>'+esc(fo)+'</option>';}).join('')
+        +'</select>'
+        +'<label class="ll-direct"><input type="checkbox" class="ll-directchk" data-pi="'+pi+'"'+(direct?' checked':'')+'> ☎ direct</label>'
+        +'</div></div>';
+    };
+    const isRed=(ph)=>{const f=flags[getFlagKey(ri,role,ph)];return f&&!f.undone&&f.rule!=='7x';}; // 2x/wrong/disc are red; 7x stays callable
+    const good=[],bad=[];
+    phones.forEach((ph,pi)=>{(isRed(ph)?bad:good).push([ph,pi]);});
+    h+='<div class="ll-numbers">';
+    good.forEach(([ph,pi])=>{h+=rowHtml(ph,pi,true);});   // callable: checked by default
+    h+='</div>';
+    if(bad.length){
+      h+='<button type="button" class="ll-badtoggle" onclick="llToggleBad()">▸ '+bad.length+' flagged number'+(bad.length>1?'s':'')+' hidden (tap to show)</button>';
+      h+='<div id="ll-badnums" class="ll-numbers hidden" style="margin-top:8px">';
+      bad.forEach(([ph,pi])=>{h+=rowHtml(ph,pi,false);}); // red: unchecked (auto-deselected)
+      h+='</div>';
+    }
+  }else{
+    h+='<div class="no-phone">No phone on file — you can still log below.</div>';
+  }
+
+  // Who / outcome + lead status
+  h+='<div class="ll-grid">';
+  h+='<div><p class="ll-label">Who reached</p><select id="ll-who">'
+    +['NO CONTACT','GK','EA','CEO','CRA','CFO'].map(w=>'<option value="'+w+'">'+w+'</option>').join('')
+    +'</select></div>';
+  h+='<div><p class="ll-label">Outcome</p><select id="ll-outcome">'
+    +['No Answer','Left Message','Follow-up','Email requested/ Follow-up','Check Back Later','Expressed Interest','Not Interested','Decline'].map(o=>'<option value="'+esc(o)+'">'+esc(o)+'</option>').join('')
+    +'</select></div>';
+  h+='</div>';
+
+  h+='<p class="ll-label">Lead status</p><select id="ll-leadstatus" onchange="llLeadStatusChange()">'
+    +'<option value="active">Active</option>'
+    +'<option value="retired">Retired</option>'
+    +'<option value="deceased">Deceased</option>'
+    +'<option value="notwith">No longer with the bank</option>'
+    +'<option value="gkcant">GK couldn\'t find the lead</option>'
+    +'</select>';
+
+  h+='<p class="ll-label">Note for the day</p><textarea id="ll-note" placeholder="One note for this lead"></textarea>';
+
+  // ── Follow-up section ──
+  const isFU=isFUBank(ri);
+  const fuInfo=fuByBank[bankId(ri)];
+  const fuContact=isFU?String(fuInfo.f.d[FU.CONTACT]||''):'';
+  const fuPerson=isFU?String(fuInfo.f.d[FU.PERSON]||''):'';
+  h+='<div class="ll-fu">'
+    +'<label class="ll-futoggle"><input type="checkbox" id="ll-fu-on"'+(isFU?' checked':'')+' onchange="llFuToggle()"> '
+    +(isFU?'Update Follow-Up sheet (this is a follow-up bank)':'Make this a follow-up')+'</label>'
+    +'<div id="ll-fu-fields" class="'+(isFU?'':'hidden')+'">'
+      +'<div class="ll-grid" style="margin-top:10px">'
+        +'<div><p class="ll-label">Follow-up date</p><input type="text" id="ll-fu-date" placeholder="M/D/YYYY" value=""></div>'
+        +'<div><p class="ll-label">Person</p><input type="text" id="ll-fu-person" placeholder="Lead name" value="'+esc(fuPerson||String(d[rc.name]||''))+'"></div>'
+      +'</div>'
+      +(!isFU?'<p class="ll-label">Contact number</p><input type="text" id="ll-fu-contact" placeholder="Best number for follow-up" value="'+esc(fuContact)+'" style="width:100%;margin-bottom:6px">':'<input type="hidden" id="ll-fu-contact" value="'+esc(fuContact)+'">')
+    +'</div>'
+    +(isFU?'<div class="ll-fu-manage">'
+      +'<button class="btn-log-general" onclick="undoNewFollowup('+ri+')" title="Delete the row (use if you just added it by mistake)">↩ Undo follow-up (remove row)</button>'
+      +'<button class="btn-log-general" onclick="if(confirm(\'Stop following up and DELETE the row from the sheet?\'))deleteFollowupRow('+ri+',false)" title="Done following up, remove the row from the sheet">✕ Stop &amp; remove from sheet</button>'
+      +'<button class="btn-log-general" onclick="hideFollowup('+ri+')" title="Done following up, but keep the row on the sheet">🙈 Stop &amp; hide in app only</button>'
+      +'</div>':'')
+  +'</div>';
+
+  // App-only extras (kept, but tucked below)
+  h+='<div class="ll-extras">'
+    +'<button class="btn-log-general" onclick="addNumber('+ri+',\''+role+'\')">+ Add number</button>'
+    +'<button class="btn-log-general" onclick="promptEmailLog('+ri+',\''+role+'\')">📧 Log email sent</button>'
+    +(rc.ea!=null?'<button class="btn-log-general" onclick="editEA('+ri+',\''+role+'\')">✎ EA</button>':'')
+    +'</div>';
+
+  h+='<div class="ll-actions"><button class="btn-log-call" style="flex:1" onclick="saveLeadLog()">Save · +1 call</button>'
+    +'<button class="btn-log-general" onclick="closeLeadLog()">Cancel</button></div>';
+
+  el('ll-body').innerHTML=h;
+  el('leadlog-modal').classList.remove('hidden');
+}
+function llLeadStatusChange(){
+  // no-op hook for now; DNE reason handled at save
+}
+function llToggleBad(){
+  const el2=el('ll-badnums');if(!el2)return;
+  el2.classList.toggle('hidden');
+  const btn=document.querySelector('.ll-badtoggle');
+  if(btn)btn.textContent=el2.classList.contains('hidden')?btn.textContent.replace('▾','▸'):btn.textContent.replace('▸','▾');
+}
+function llFuToggle(){
+  const on=el('ll-fu-on')?.checked;
+  el('ll-fu-fields')?.classList.toggle('hidden',!on);
+}
+async function saveLeadLog(){
+  if(!llCtx){closeLeadLog();return;}
+  const {ri,role,phones}=llCtx;
+  const b=banks.find(x=>x.ri===ri);
+  if(!b||!RC[role]){closeLeadLog();toast('Could not find that lead — please refresh','error');return;}
+  const d=b.d,rc=RC[role];
+  const dateStr=workDateDisplay();
+  const existingNotes=String(d[rc.notes]||'');
+  const dateInNotes=existingNotes.includes(dateStr);
+  const who=el('ll-who')?.value||'NO CONTACT';
+  const outcome=el('ll-outcome')?.value||'No Answer';
+  const noteTxt=el('ll-note')?.value.trim()||'';
+  const leadStatus=el('ll-leadstatus')?.value||'active';
+
+  // Direct-line: apply checkbox state per number
+  document.querySelectorAll('.ll-directchk').forEach(cb=>{
+    const pi=parseInt(cb.getAttribute('data-pi')), ph=phones[pi];if(!ph)return;
+    const dg=phoneDigits(ph), k=bankId(ri)+'__'+role;
+    if(cb.checked)directLines[k]=dg;
+    else if(directLines[k]===dg)delete directLines[k];
+  });
+  saveDirectLines();
+
+  // Lead status = not existing -> mark DNE with reason, do NOT count a call
+  if(leadStatus!=='active'){
+    const reasonMap={retired:'Retired',deceased:'Deceased',notwith:'No longer with the bank',gkcant:"GK couldn't find the lead"};
+    const k=dneKey(ri,role);
+    dne[k]={ri,role,name:String(d[rc.name]||''),reason:reasonMap[leadStatus]||'',date:workDate,undone:false,inReport:true};
+    saveDNE();closeLeadLog();rebuildCard(ri,false);renderStats();
+    toast('Marked not in system: '+(reasonMap[leadStatus]||''),'success');
+    return;
+  }
+
+  // Per-number dial counting + status flags
+  const bgTasks=[];
+  let dialCount=0, sevenXNote='', mainPh='';
+  document.querySelectorAll('.ll-dialed').forEach(cb=>{
+    if(!cb.checked)return;
+    const pi=parseInt(cb.getAttribute('data-pi')), ph=phones[pi];if(!ph)return;
+    if(!mainPh)mainPh=ph;
+    const cKey=bankId(ri)+'__'+role+'__'+ph;
+    calls[cKey]=(calls[cKey]||0)+1;
+    dialCount++;
+  });
+  if(!dialCount&&phones.length){mainPh=phones[0];} // logging without dialling still allowed
+
+  // Apply per-number status dropdowns
+  document.querySelectorAll('.ll-status').forEach(sel=>{
+    const pi=parseInt(sel.getAttribute('data-pi')), ph=phones[pi];if(!ph)return;
+    const val=sel.value;
+    const fk=getFlagKey(ri,role,ph);
+    if(val==='ok'){
+      // clear an auto/manual flag if it was set and user reset to OK
+      if(flags[fk]&&!flags[fk].undone){flags[fk].undone=true;}
+      return;
+    }
+    let issue='',rule=undefined;
+    if(val==='2x'){issue='2x no answer (black box)';rule='2x';}
+    else if(val==='7x'){issue='7x no answer (reached bank/lead)';rule='7x';}
+    else if(val.startsWith('opt:')){issue=val.slice(4);if(/black box/i.test(issue))rule='2x';}
+    else if(val==='wrong'){issue='Wrong number';}
+    else if(val==='disc'){issue='Disconnected / not in service';}
+    else if(val==='noemp'){issue='No employee info given';}
+    else if(val==='dnc'){issue='Do not call / opt-out';}
+    else if(val==='blackbox'){issue='Black box (no identifier)';rule='2x';}
+    // Preserve the ORIGINAL flag date if this exact flag already exists and is unchanged.
+    // Only stamp today's date when the number is being newly flagged (or the reason changed)
+    // in THIS save — so re-logging a call on an already-flagged number does NOT bump it into today's report.
+    const prev=flags[fk];
+    const isSameActiveFlag=prev&&!prev.undone&&prev.issue===issue;
+    const stampReal=isSameActiveFlag?(prev.dateReal||prev.date):realToday();
+    flags[fk]={ri,role,phone:ph,issue,undone:false,called:true,date:workDate,dateReal:stampReal,scope:'app',rule};
+    if(rule==='7x'){
+      const dg=phoneDigits(ph);
+      const fmt=dg.length===10?dg.slice(0,3)+'.'+dg.slice(3,6)+'.'+dg.slice(6):phoneBase(ph);
+      if(!existingNotes.includes(fmt+' 7x no answer'))sevenXNote=fmt+' 7x no answer';
+    }
+    // propagate to same number on other leads (preserve their date if already flagged)
+    const digits=phoneDigits(ph);
+    if(digits)for(const oR of ['CEO','CRA','CFO'].filter(r=>r!==role)){
+      const orc=RC[oR];const m=parsePhones(d[orc.phone]).find(op=>phoneDigits(op)===digits);
+      if(m){const ofk=getFlagKey(ri,oR,m);const oprev=flags[ofk];
+        const oStamp=(oprev&&!oprev.undone&&oprev.issue===issue)?(oprev.dateReal||oprev.date):realToday();
+        flags[ofk]={ri,role:oR,phone:m,issue,undone:false,called:false,sharedFrom:role,date:workDate,dateReal:oStamp,scope:'app',rule};}
+    }
+  });
+
+  // Build note
+  const noteLines=[];
+  if(noteTxt)noteLines.push(noteTxt+(/[.!?]$/.test(noteTxt)?'':'.'));
+  if(sevenXNote)noteLines.push(sevenXNote);
+
+  const before={recent:d[rc.recent]||'',times:String(parseInt(d[rc.times])||0),outcome:d[rc.outcome]||'',who:d[rc.who]||'',notes:existingNotes};
+
+  let noteEntry='';
+  if(noteLines.length){
+    noteEntry=dateInNotes?noteLines.join('\n'):(dateStr+'\n'+noteLines.join('\n'));
+    d[rc.notes]=existingNotes?existingNotes+'\n'+noteEntry:noteEntry;
+  }
+
+  // One +1, one who, one outcome, date
+  d[rc.recent]=dateStr;
+  d[rc.times]=String((parseInt(d[rc.times])||0)+1);
+  d[rc.outcome]=outcome;
+  d[rc.who]=who;
+
+  const logEntry={id:genId(),ri,role,who,outcome,noteEntry,noteText:noteLines.join(' '),notesTxt:noteTxt,phone:mainPh,called:true,dialCount:dialCount||1,date:workDate,before,deleted:false};
+  const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(logEntry);
+  saveLogs();saveFlags();saveCalls();saveCallMeta();
+
+  const updates=[
+    {row:ri,col:rc.notes,value:d[rc.notes]||''},
+    {row:ri,col:rc.recent,value:d[rc.recent]},
+    {row:ri,col:rc.times,value:d[rc.times]},
+    {row:ri,col:rc.outcome,value:d[rc.outcome]},
+    {row:ri,col:rc.who,value:d[rc.who]}
+  ];
+  writeSheet(updates);
+  mirrorPriority(ri,role);
+  snapLead(ri,role);
+
+  // ── Follow-up sheet sync ──
+  const fuOn=el('ll-fu-on')?.checked;
+  if(fuOn){
+    const fuTab=cfg.followupTab||'Follow-Up Sheet';
+    const fuDate=el('ll-fu-date')?.value.trim()||'';
+    if(fuDate&&!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(fuDate)){toast('Follow-up date must be M/D/YYYY','error');return;}
+    const existingFU=fuByBank[bankId(ri)];
+    if(existingFU){
+      // Update existing follow-up row
+      const f=existingFU.f,fd=f.d;
+      fd[FU.FOLLOWUP]=fuDate||dateStr;
+      fd[FU.TIMES]=String((parseInt(fd[FU.TIMES])||0)+1);
+      if(noteTxt){const ex=String(fd[FU.NOTES]||'');fd[FU.NOTES]=ex?ex+'\n'+dateStr+': '+noteTxt:dateStr+': '+noteTxt;}
+      fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({sheetId:cfg.sheetId,tabName:fuTab,updates:[
+          {row:f.fri,col:FU.FOLLOWUP,value:fd[FU.FOLLOWUP]},
+          {row:f.fri,col:FU.TIMES,value:fd[FU.TIMES]},
+          {row:f.fri,col:FU.NOTES,value:fd[FU.NOTES]||''}
+        ]})}).catch(e=>console.error(e));
+    }else{
+      // Create a NEW follow-up row: Bank + Person + Contact + Follow-up date + Rep
+      const person=el('ll-fu-person')?.value.trim()||String(d[rc.name]||'');
+      const contact=el('ll-fu-contact')?.value.trim()||'';
+      const rep=(cfg.name||'Leon');
+      const rowVals=[]; rowVals[FU.BANK]=String(d[C.BANK]||''); rowVals[FU.PERSON]=person;
+      rowVals[FU.CONTACT]=contact; rowVals[FU.FOLLOWUP]=fuDate||dateStr; rowVals[FU.REP]=rep;
+      if(noteTxt)rowVals[FU.NOTES]=dateStr+': '+noteTxt;
+      const rowArr=[]; for(let i=0;i<=FU.NOTES;i++)rowArr[i]=rowVals[i]||'';
+      fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({type:'appendRow',sheetId:cfg.sheetId,tabName:fuTab,values:rowArr})}).catch(e=>console.error(e));
+      toast('New follow-up added','success');
+    }
+  }
+
+  const declineHappened=(outcome==='Decline');
+  renderStats();closeLeadLog();rebuildCard(ri,declineHappened);
+  toast('Call logged ✓','success');
+}
+
+async function saveNumModal(){
+  if(!numCtx)return;
+  const {ri,role,phones}=numCtx;
+  const b=banks.find(x=>x.ri===ri),d=b.d,rc=RC[role];
+  const dateStr=workDateDisplay();
+  const existingNotes=String(d[rc.notes]||'');
+  const dateInNotes=existingNotes.includes(dateStr);
+
+  const pi=parseInt(el('nm-pick')?.value||'0');
+  const ph=phones[pi]||'';
+  const who=el('nm-who')?.value||'NO CONTACT';
+  const outcome=el('nm-outcome')?.value||'No Answer';
+  const spoke=el('nm-spoke')?.value.trim()||'';
+  const newNum=el('nm-newnum')?.value.trim()||'';
+  const notesTxt=el('nm-notes')?.value.trim()||'';
+  const flagIssue=el('nm-flag')?.value||'';
+  const flagScope=document.querySelector('input[name="nm-flagscope"]:checked')?.value||'app';
+
+  const bgTasks=[];
+  const pendingFlagPrompts=[];
+
+  // Count quick-dials (other numbers dialed, no contact)
+  const quickDials=[];
+  document.querySelectorAll('.nm-quickdial:checked').forEach(cb=>{
+    const qpi=parseInt(cb.getAttribute('data-pi'));
+    if(qpi!==pi)quickDials.push(phones[qpi]);
+  });
+
+  const declineHappened=(outcome==='Decline');
+
+  // ── Build the note (only if there is real content) ──
+  const noteLines=[];
+  let sevenXNote='';
+  const parts=[];
+  if(notesTxt)parts.push(notesTxt);
+  if(spoke)parts.push('Spoke to: '+spoke);
+  if(parts.length)noteLines.push(parts.join('. ')+'.');
+  // New number added to phone cell only, not notes
+
+  // ── Dial counting: 1 for the main call + each quick-dial ──
+  const cKey=bankId(ri)+'__'+role+'__'+ph;
+  calls[cKey]=(calls[cKey]||0)+1;
+  let dialCount=1;
+  quickDials.forEach(qph=>{
+    const qKey=bankId(ri)+'__'+role+'__'+qph;
+    calls[qKey]=(calls[qKey]||0)+1;
+    dialCount++;
+  });
+
+  // ── 2x / 7x tracking on the main number ──
+  const naKey=cKey+'__na', atKey=cKey+'__at';
+  //  Black box number (no identifier), no answer   -> 2x rule
+  //  Confirmed bank/lead number, no answer         -> 7x rule
+  const isBB=isBlackbox(ri,role,ph);
+  if(outcome==='No Answer'){
+    if(isBB){
+      callMeta[naKey]=(callMeta[naKey]||0)+1;
+      // Auto-flag (app only) at 2 for black box, once
+      if((callMeta[naKey]||0)>=2&&!flags[getFlagKey(ri,role,ph)]){
+        flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:'2x no answer (black box)',undone:false,called:true,date:workDate,dateReal:realToday(),scope:'app',auto:true,rule:'2x'};
+      }
+    }else{
+      callMeta[atKey]=(callMeta[atKey]||0)+1;
+      // Auto-flag (app only) at 7 for confirmed number, once
+      if((callMeta[atKey]||0)>=7&&!flags[getFlagKey(ri,role,ph)]){
+        flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:'7x no answer (reached bank/lead)',undone:false,called:true,date:workDate,dateReal:realToday(),scope:'app',auto:true,rule:'7x'};
+        // Write the 7x line into notes ONCE, formatted, no em dashes, for the exec team
+        const dg=phoneDigits(ph);
+        const fmt=dg.length===10?dg.slice(0,3)+'.'+dg.slice(3,6)+'.'+dg.slice(6):phoneBase(ph);
+        sevenXNote=fmt+' 7x no answer';
+      }
+    }
+  }
+
+  // ── Flag handling (app-only or sheet) ──
+  if(flagIssue){
+    flags[getFlagKey(ri,role,ph)]={ri,role,phone:ph,issue:flagIssue,undone:false,called:true,date:workDate,scope:flagScope};
+    if(flagScope==='sheet'){
+      bgTasks.push(()=>strikethrough(ri,rc.phone,ph));
+      bgTasks.push(()=>writeContactUpdate(ri,role,ph,flagIssue,d,phones));
+    }
+    // Shared numbers across roles — only when we have real digits to compare
+    const digits=phoneDigits(ph);
+    for(const otherRole of ['CEO','CRA','CFO'].filter(r=>r!==role)){
+      if(!digits)break;
+      const orc=RC[otherRole];
+      const matchPh=parsePhones(d[orc.phone]).find(op=>digits&&phoneDigits(op)===digits);
+      if(matchPh){
+        flags[getFlagKey(ri,otherRole,matchPh)]={ri,role:otherRole,phone:matchPh,issue:flagIssue,undone:false,called:false,sharedFrom:role,date:workDate,scope:flagScope};
+        if(flagScope==='sheet')bgTasks.push(()=>strikethrough(ri,orc.phone,matchPh));
+      }
+    }
+  }
+
+  // ── Add new number to phone cell ──
+  if(newNum)d[rc.phone]=d[rc.phone]?d[rc.phone]+'; '+newNum:newNum;
+
+  // (No popup when logging on an already-flagged number. 7x numbers stay callable;
+  //  the flag remains unless the user clears it themselves.)
+
+  // ── Snapshot for undo ──
+  const before={recent:d[rc.recent]||'',times:String(parseInt(d[rc.times])||0),outcome:d[rc.outcome]||'',who:d[rc.who]||'',notes:existingNotes};
+
+  // ── Write note to notes cell ──
+  if(sevenXNote)noteLines.push(sevenXNote); // 7x line, written once at threshold
+  let noteEntry='';
+  if(noteLines.length){
+    noteEntry=dateInNotes?noteLines.join('\n'):(dateStr+'\n'+noteLines.join('\n'));
+    d[rc.notes]=String(d[rc.notes]||'')?String(d[rc.notes])+'\n'+noteEntry:noteEntry;
+  }
+
+  // ── Update lead columns (the ONE who, ONE outcome) ──
+  // Times-called goes up on every logged call.
+  d[rc.recent]=dateStr;
+  d[rc.times]=String((parseInt(d[rc.times])||0)+1);
+  d[rc.outcome]=outcome;
+  d[rc.who]=who;
+
+  // ── Save the log entry — who and outcome exactly as selected ──
+  const logEntry={id:genId(),ri,role,who,outcome,noteEntry,noteText:noteLines.join(' '),notesTxt,spokeTo:spoke,newNum,phone:ph,called:true,dialCount,date:workDate,before,deleted:false};
+  const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(logEntry);
+  saveLogs();saveFlags();saveCalls();saveCallMeta();
+
+  // ── Sheet write (background) ──
+  const updates=[
+    {row:ri,col:rc.notes,value:d[rc.notes]||''},
+    {row:ri,col:rc.recent,value:d[rc.recent]},
+    {row:ri,col:rc.times,value:d[rc.times]},
+    {row:ri,col:rc.outcome,value:d[rc.outcome]},
+    {row:ri,col:rc.who,value:d[rc.who]}
+  ];
+  if(newNum)updates.push({row:ri,col:rc.phone,value:d[rc.phone]});
+
+  // Close + refresh immediately
+  snapLead(ri,role);renderStats();closeNumModal();rebuildCard(ri,declineHappened);
+  toast(who!=='NO CONTACT'?'Logged — '+who+' reached':'Logged','success');
+
+  // Background network
+  writeSheet(updates);
+  mirrorPriority(ri,role);
+  bgTasks.forEach(t=>{try{t();}catch(e){console.error(e);}});
+
+  // 2x/7x prompts
+  pendingFlagPrompts.forEach(p=>{
+    setTimeout(()=>{
+      if(confirm(phoneBase(p.ph)+' has reached '+p.issue+' for '+p.role+'. Flag this number?')){
+        flags[getFlagKey(p.ri,p.role,p.ph)]={ri:p.ri,role:p.role,phone:p.ph,issue:p.issue,undone:false,called:true,date:workDate,scope:'app',auto:true};
+        saveFlags();rebuildCard(p.ri,false);renderStats();toast(phoneBase(p.ph)+' flagged (app only)','success');
+      }
+    },120);
+  });
+}
+
+function openGenModal(ri,role){
+  genCtx={ri,role};
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  const rc=RC[role];
+  st('gm-title',b.d[C.BANK]+' — '+role+': '+(b.d[rc.name]||'—'));
+  const _geff=effEmailDate(b.d,role);st('gm-sub','Row '+ri+' · '+(b.d[C.REG]||'')+(b.d[C.AA]?' · AA: '+b.d[C.AA]:'')+(_geff?' · Email sent: '+_geff:''));
+  el('gm-who').value='NO CONTACT';el('gm-outcome').value='No Answer';
+  sv('gm-spoke','');sv('gm-newnum','');sv('gm-notes','');
+  // Show last 2 notes for context
+  const existingNotes=String(b.d[rc.notes]||'');
+  const notesPreview=el('gm-notes-preview');
+  if(notesPreview&&existingNotes.trim()){
+    const lines=existingNotes.trim().split('\n').slice(-3);
+    notesPreview.textContent=lines.join('\n');
+    notesPreview.closest('.gm-notes-section').classList.remove('hidden');
+  }else if(notesPreview){
+    notesPreview.closest('.gm-notes-section').classList.add('hidden');
+  }
+  el('gm-decline-warn').classList.add('hidden');
+  el('gen-modal').classList.remove('hidden');
+}
+function closeGenModal(){el('gen-modal').classList.add('hidden');genCtx=null;}
+function checkGenWarnings(){el('gm-decline-warn').classList.toggle('hidden',gv('gm-outcome')!=='Decline');}
+
+async function saveGenLog(){
+  if(!genCtx)return;
+  const {ri,role}=genCtx;
+  const outcome=gv('gm-outcome'),who=gv('gm-who'),spoke=gv('gm-spoke').trim(),newNum=gv('gm-newnum').trim(),notesTxt=gv('gm-notes').trim();
+  if(outcome==='Decline'){if(!confirm('Confirm decline for '+(banks.find(x=>x.ri===ri)?.d[C.BANK]||'')+'?'))return;}
+  const b=banks.find(x=>x.ri===ri),d=b.d,rc=RC[role],dateStr=workDateDisplay();
+  const existingNotes=String(d[rc.notes]||''),dateInNotes=existingNotes.includes(dateStr);
+  const before={recent:d[rc.recent]||'',times:String(parseInt(d[rc.times])||0),outcome:d[rc.outcome]||'',who:d[rc.who]||'',notes:existingNotes};
+  const parts=[];
+  if(notesTxt)parts.push(notesTxt);if(spoke)parts.push('Spoke to: '+spoke);
+  // Decline handled internally — nothing about it goes to notes
+  let noteEntry='';
+  if(parts.length){noteEntry=dateInNotes?parts.join('. ')+'.':(dateStr+'\n'+parts.join('. ')+'.');}
+  if(noteEntry)d[rc.notes]=existingNotes?existingNotes+'\n'+noteEntry:noteEntry;
+  d[rc.recent]=dateStr;d[rc.times]=String((parseInt(d[rc.times])||0)+1);d[rc.outcome]=outcome;d[rc.who]=who;
+  if(newNum)d[rc.phone]=d[rc.phone]?d[rc.phone]+'; '+newNum:newNum;
+  const logEntry={id:genId(),ri,role,who,outcome,noteEntry,noteText:parts.join(' · ')||'',called:true,date:workDate,before,deleted:false};
+  const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(logEntry);saveLogs();
+  const updates=[{row:ri,col:rc.recent,value:d[rc.recent]},{row:ri,col:rc.times,value:d[rc.times]},{row:ri,col:rc.who,value:d[rc.who]},{row:ri,col:rc.outcome,value:d[rc.outcome]},{row:ri,col:rc.notes,value:d[rc.notes]}];
+  if(newNum)updates.push({row:ri,col:rc.phone,value:d[rc.phone]});
+  await writeSheet(updates);
+  mirrorPriority(ri,role);
+  snapLead(ri,role);renderStats();closeGenModal();rebuildCard(ri,outcome==='Decline');
+  toast(outcome==='Decline'?'Bank marked declined':'Call logged ✓','success');
+}
+
+// UNDO SYSTEM
+function openUndoLog(ri,role,id){
+  const b=banks.find(x=>x.ri===ri),log=(logs[logKey(ri)]||[]).find(l=>l.id===id);if(!log)return;
+  undoCtx={type:'log',ri,role,id};
+  st('undo-desc','Undo "'+log.outcome+'" logged for '+role+' at '+(b?.d[C.BANK]||'')+'?\n\nThis restores the sheet to its previous state.');
+  el('undo-modal').classList.remove('hidden');
+}
+function openUndoAllLogs(ri,role){
+  const b=banks.find(x=>x.ri===ri);undoCtx={type:'allLogs',ri,role};
+  st('undo-desc','Undo ALL of today\'s entries for '+role+' at '+(b?.d[C.BANK]||'')+'?');
+  el('undo-modal').classList.remove('hidden');
+}
+function openUndoFlag(ri,role,phoneIdx){
+  const b=banks.find(x=>x.ri===ri),phones=parsePhones(b?.d[RC[role].phone]||''),phone=phones[phoneIdx]||'';
+  undoCtx={type:'flag',ri,role,phone};
+  st('undo-desc','Undo bad number flag for '+phone+' ('+role+' at '+(b?.d[C.BANK]||'')+')?');
+  el('undo-modal').classList.remove('hidden');
+}
+function openUndoDecline(ri){
+  const b=banks.find(x=>x.ri===ri);undoCtx={type:'decline',ri};
+  st('undo-desc','Undo the decline for '+(b?.d[C.BANK]||'')+'?\n\nThis bank will become active again.');
+  el('undo-modal').classList.remove('hidden');
+}
+function closeUndoModal(){el('undo-modal').classList.add('hidden');undoCtx=null;}
+async function confirmUndo(){
+  if(!undoCtx)return;const{type,ri,role,id,phone}=undoCtx;closeUndoModal();
+  if(type==='log')await undoLog(ri,role,id);
+  if(type==='allLogs')await undoAllLogs(ri,role);
+  if(type==='flag')await undoFlag(ri,role,phone);
+  if(type==='decline')await undoDecline(ri);
+}
+
+async function undoLog(ri,role,id){
+  const key=logKey(ri),log=(logs[key]||[]).find(l=>l.id===id);if(!log)return;
+  log.deleted=true;saveLogs();
+  const b=banks.find(x=>x.ri===ri),rc=RC[role];
+  const remaining=(logs[key]||[]).filter(l=>!l.deleted&&l.role===role);
+  // Restore from before snapshot
+  if(log.before){b.d[rc.recent]=log.before.recent;b.d[rc.times]=log.before.times;b.d[rc.outcome]=log.before.outcome;b.d[rc.who]=log.before.who;b.d[rc.notes]=log.before.notes;}
+  // Decrement call counter
+  if(log.called&&log.phone){const cKey=bankId(ri)+'__'+role+'__'+log.phone;calls[cKey]=Math.max(0,(calls[cKey]||1)-1);saveCalls();}
+  await writeSheet([{row:ri,col:rc.notes,value:b.d[rc.notes]},{row:ri,col:rc.times,value:b.d[rc.times]},{row:ri,col:rc.outcome,value:b.d[rc.outcome]},{row:ri,col:rc.who,value:b.d[rc.who]},{row:ri,col:rc.recent,value:b.d[rc.recent]}]);
+  mirrorPriority(ri,role);
+  renderStats();rebuildCard(ri,false);toast('Entry undone','success');
+}
+
+async function undoAllLogs(ri,role){
+  const key=logKey(ri);const today=(logs[key]||[]).filter(l=>l.role===role&&!l.deleted);
+  const first=today[0];today.forEach(l=>l.deleted=true);saveLogs();
+  const b=banks.find(x=>x.ri===ri),rc=RC[role];
+  if(first&&first.before){b.d[rc.recent]=first.before.recent;b.d[rc.times]=first.before.times;b.d[rc.outcome]=first.before.outcome;b.d[rc.who]=first.before.who;b.d[rc.notes]=first.before.notes;}
+  await writeSheet([{row:ri,col:rc.notes,value:b.d[rc.notes]},{row:ri,col:rc.times,value:b.d[rc.times]},{row:ri,col:rc.outcome,value:b.d[rc.outcome]},{row:ri,col:rc.who,value:b.d[rc.who]},{row:ri,col:rc.recent,value:b.d[rc.recent]}]);
+  mirrorPriority(ri,role);
+  renderStats();rebuildCard(ri,false);toast('All entries undone','success');
+}
+
+async function undoFlag(ri,role,phone){
+  let fKey=getFlagKey(ri,role,phone);
+  // If exact key not found, match by digits (handles ext/format differences)
+  if(!flags[fKey]||flags[fKey].undone){
+    const wantDg=phoneDigits(phone);
+    const bid=bankId(ri);
+    const foundKey=Object.keys(flags).find(k=>{
+      const f=flags[k];
+      return f&&!f.undone&&f.ri===ri&&f.role===role&&phoneDigits(f.phone)===wantDg;
+    })||Object.keys(flags).find(k=>{
+      const f=flags[k];
+      return f&&!f.undone&&bankId(f.ri)===bid&&f.role===role&&phoneDigits(f.phone)===wantDg;
+    });
+    if(foundKey)fKey=foundKey;
+  }
+  if(!flags[fKey]){
+    // No flag OBJECT exists — the number is flagged purely from a keyword in the notes text.
+    // Create an "undone" marker so isPhoneBad stops flagging it, and strip the note flag-line.
+    const b=banks.find(x=>x.ri===ri),rc=RC[role];
+    if(b){
+      const wantDg=phoneDigits(phone);
+      flags[getFlagKey(ri,role,phone)]={ri,role,phone,issue:'',undone:true,scope:'app'};
+      saveFlags();
+      // Remove the note line(s) mentioning this number + a bad keyword
+      const notes=String(b.d[rc.notes]||'').split('\n').filter(l=>{
+        if(!wantDg)return true;
+        const lineDg=l.replace(/[^\d]/g,'');
+        const hasNum=lineDg.includes(wantDg);
+        const isFlagLine=hasNum&&(FLAG_OPTIONS.some(k=>l.toLowerCase().includes(k.toLowerCase()))||BAD_KW.some(k=>l.toLowerCase().includes(k)));
+        return !isFlagLine;
+      }).join('\n').trim();
+      if(notes!==String(b.d[rc.notes]||'')){
+        b.d[rc.notes]=notes;
+        await writeSheet([{row:ri,col:rc.notes,value:notes}]);
+        try{await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:rc.phone,phone})});}catch(e){}
+      }
+      renderStats();rebuildCard(ri,false);toast('Flag removed (was from the notes)','success');
+      return;
+    }
+    toast('No active flag found on that number','error');return;
+  }
+  const wasSheet=flags[fKey].scope==='sheet'||flags[fKey].scope===undefined&&!flags[fKey].sharedFrom;
+  flags[fKey].undone=true;saveFlags();
+  const phDigits=phoneDigits(flags[fKey].phone||phone);
+  if(wasSheet){
+    const b=banks.find(x=>x.ri===ri),rc=RC[role];
+    // Remove flag note line from notes (only lines that are flag lines: number + a flag reason)
+    const notes=String(b.d[rc.notes]||'').split('\n').filter(l=>{
+      if(!phDigits)return true;
+      const lineDg=l.replace(/[^\d]/g,'');
+      const hasNum=lineDg.includes(phDigits);
+      const isFlagLine=hasNum&&FLAG_OPTIONS.some(k=>l.toLowerCase().includes(k.toLowerCase()));
+      return !isFlagLine;
+    }).join('\n').trim();
+    b.d[rc.notes]=notes;
+    await writeSheet([{row:ri,col:rc.notes,value:notes}]);
+    try{
+      await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:rc.phone,phone:flags[fKey].phone||phone})});
+    }catch(e){console.error('Unstrikethrough error',e);}
+    await removeContactUpdate(ri,role,flags[fKey].phone||phone,b.d);
+  }
+  renderStats();rebuildCard(ri,false);toast(wasSheet?'Flag removed (app + sheet, un-struck)':'Flag removed (app only)','success');
+}
+
+async function undoDecline(ri){
+  const key=logKey(ri);const dec=(logs[key]||[]).find(l=>l.outcome==='Decline'&&!l.deleted);
+  if(dec){dec.deleted=true;saveLogs();}
+  const b=banks.find(x=>x.ri===ri);
+  for(const role of['CEO','CRA','CFO']){
+    const rc=RC[role];b.d[rc.outcome]='';
+    await writeSheet([{row:ri,col:rc.outcome,value:''}]);
+  }
+  renderStats();rebuildCard(ri,false);toast('Decline undone','success');
+}
+
+// CONTACT UPDATE SHEET
+async function writeContactUpdate(ri,role,phone,issue,bankData,allPhones){
+  if(!cfg.updateSheetId||!cfg.updateTab)return;
+  // Check if same number exists across other roles at this bank
+  const otherRolesWithSameNumber=['CEO','CRA','CFO'].filter(r=>r!==role&&parsePhones(bankData[RC[r].phone]).includes(phone));
+  const leadTitle=role==='CRA'?'CRA OFFICER':role;
+  const leadName=bankData[RC[role].name]||'';
+  let combinedTitle=leadTitle,combinedName=leadName;
+  if(otherRolesWithSameNumber.length){
+    combinedTitle=[leadTitle,...otherRolesWithSameNumber.map(r=>r==='CRA'?'CRA OFFICER':r)].join(' & ');
+    combinedName=[leadName,...otherRolesWithSameNumber.map(r=>bankData[RC[r].name]||'')].filter(Boolean).join(' & ');
+  }
+  try{
+    await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'appendContactUpdate',sheetId:cfg.updateSheetId,tabName:cfg.updateTab,
+        rowData:{rowNum:ri,bankName:bankData[C.BANK]||'',leadTitle:combinedTitle,leadName:combinedName,issue:phone+' : '+issue}})});
+  }catch(e){console.error('Contact update error',e);}
+}
+
+async function removeContactUpdate(ri,role,phone,bankData){
+  if(!cfg.updateSheetId||!cfg.updateTab)return;
+  try{
+    await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'removeContactUpdate',sheetId:cfg.updateSheetId,tabName:cfg.updateTab,rowNum:ri,bankName:bankData[C.BANK]||'',phone})});
+  }catch(e){console.error('Remove contact update error',e);}
+}
+
+async function detectSheetStrikethroughs(){
+  // Disabled for now - rich text API call causing network errors
+  return;
+  try{
+    const phoneCols=['J','T','AD']; // CEO=col10, CRA=col20, CFO=col30 (A=1)
+    const roleMap={'J':'CEO','T':'CRA','AD':'CFO'};
+    const phoneColIdx={'J':9,'T':19,'AD':29};
+    for(const col of phoneCols){
+      const range=encodeURIComponent("'"+cfg.tab+"'!"+col+"3:"+col+"1025");
+      const url=`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}?ranges=${range}&fields=sheets.data.rowData.values.textFormatRuns,sheets.data.rowData.values.userEnteredValue&key=${cfg.apiKey}`;
+      const res=await fetch(url);
+      const data=await res.json();
+      if(data.error)continue;
+      const rows=data.sheets?.[0]?.data?.[0]?.rowData||[];
+      rows.forEach((row,idx)=>{
+        const ri=idx+3;
+        const b=banks.find(x=>x.ri===ri);
+        if(!b)return;
+        const role=roleMap[col];
+        const cell=row.values?.[0];
+        if(!cell)return;
+        const cellText=cell.userEnteredValue?.stringValue||'';
+        const runs=cell.textFormatRuns||[];
+        if(!runs.length)return;
+        // Find which portions are struck through
+        const phones=parsePhones(cellText);
+        phones.forEach(ph=>{
+          const phStart=cellText.indexOf(ph);
+          if(phStart===-1)return;
+          // Check if any run covering this position has strikethrough
+          let isStruck=false;
+          for(let r=0;r<runs.length;r++){
+            const runStart=runs[r].startIndex||0;
+            const runEnd=r+1<runs.length?(runs[r+1].startIndex||cellText.length):cellText.length;
+            if(runStart<=phStart&&phStart<runEnd&&runs[r].format?.strikethrough){
+              isStruck=true;break;
+            }
+          }
+          const fKey=getFlagKey(ri,role,ph);
+          if(isStruck&&!flags[fKey]){
+            // Auto-flag from sheet strikethrough
+            flags[fKey]={ri,role,phone:ph,issue:'Flagged in sheet',undone:false,fromSheet:true};
+          } else if(!isStruck&&flags[fKey]?.fromSheet){
+            // Number was un-struck in sheet — remove auto-flag
+            delete flags[fKey];
+          }
+        });
+      });
+    }
+    saveFlags();
+  }catch(e){console.error('Strikethrough detection error',e);}
+}
+
+async function writeSheet(updates){
+  try{
+    const ctrl=new AbortController();
+    const t=setTimeout(()=>ctrl.abort(),8000); // never hang more than 8s
+    await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({sheetId:cfg.sheetId,tabName:cfg.tab,updates}),signal:ctrl.signal});
+    clearTimeout(t);
+  }
+  catch(e){console.error('Write error',e);}
+}
+async function strikethrough(ri,phoneColIndex,badPhone){
+  if(!badPhone)return;
+  try{await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'strikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:phoneColIndex,badNumber:badPhone})});}
+  catch(e){console.error('Strikethrough error',e);}
+}
+
+// EOD REPORT
+// Scan the sheet for leads whose most-recent-call date equals the work date.
+// Safety net: if a call was logged on the sheet (or fixed manually there) but the
+// app has no log for that lead today, the report still counts it.
+function sheetReachedToday(){
+  if(!SHEET_READ_ON)return [];
+  const today=workDateDisplay();
+  const out=[];
+  banks.forEach(b=>{
+    ['CEO','CRA','CFO'].forEach(role=>{
+      const rc=RC[role];
+      const raw=b.d[rc.recent];if(!raw)return;
+      let dstr='';try{dstr=fmtSheetDate(raw);}catch{return;}
+      if(dstr!==today)return;
+      const who=String(b.d[rc.who]||'').trim()||'NO CONTACT';
+      const outcome=String(b.d[rc.outcome]||'').trim()||'No Answer';
+      // Pull today's note text from the notes cell (text after the last date marker)
+      let notesTxt='';
+      const notes=String(b.d[rc.notes]||'');
+      const idx=notes.lastIndexOf(today);
+      if(idx>=0){
+        notesTxt=notes.slice(idx+today.length).split('\n').map(s=>s.trim()).filter(Boolean).slice(0,2).join(' ');
+      }
+      out.push({ri:b.ri,role,who,outcome,notesTxt,spokeTo:'',newNum:'',called:true,dialCount:0,date:workDate,fromSheetScan:true});
+    });
+  });
+  return out;
+}
+
+function showEOD(){
+  if(el("eod-title"))st("eod-title","End of day report");
+  if(el("eod-sub"))st("eod-sub","");
+  const _dr=el('eod-dials-row'); if(_dr)_dr.style.display='';
+  const all=allLogsForDate();
+  let calledLogs=all.filter(l=>l.called);
+  const appDials=calledLogs.reduce((acc,l)=>acc+(l.dialCount||1),0);
+  // Merge in sheet-scanned entries for leads the app has no log for today
+  const seen=new Set(calledLogs.map(l=>l.ri+'__'+l.role));
+  sheetReachedToday().forEach(s=>{
+    if(!seen.has(s.ri+'__'+s.role)){calledLogs=calledLogs.concat(s);seen.add(s.ri+'__'+s.role);}
+  });
+  // REACHED RULES (one who per log now):
+  //  - who = NO CONTACT  -> not reached
+  //  - who = anything else (GK included) -> bank reached
+  //  - who = EA/CEO/CRA/CFO -> decision maker reached
+  const DM_WHO=['EA','CEO','CFO','CRA'];
+  const isReachedLog=(l)=>l.who&&l.who!=='NO CONTACT';
+  const isDMLog=(l)=>DM_WHO.includes(l.who);
+  const banksReached=new Set(calledLogs.filter(isReachedLog).map(l=>l.ri)).size;
+  const peopleReached=new Set(calledLogs.filter(isDMLog).map(l=>l.ri+'_'+l.role)).size;
+
+  // Build one connect entry per bank (best outcome wins)
+  const PRIORITY=['Expressed Interest','Email requested/ Follow-up','Follow-up','Left Message','Check Back Later','No Answer'];
+  const connectMap={};
+  calledLogs.filter(isReachedLog).forEach(l=>{
+    const key=l.ri;
+    if(!connectMap[key]||PRIORITY.indexOf(l.outcome)<PRIORITY.indexOf(connectMap[key].outcome)){
+      const b=banks.find(x=>x.ri===l.ri);
+      if(b){
+        const parts=[];
+        if(l.outcome==='Expressed Interest')parts.push('Appointment scheduled');
+        if(l.notesTxt&&l.notesTxt.trim())parts.push(l.notesTxt.trim().replace(/\.+$/,''));
+        if(l.spokeTo&&l.spokeTo.trim())parts.push('Spoke to '+l.spokeTo.trim().replace(/\.+$/,''));
+        // new number not shown in report notes
+        const cleanNote=parts.length?parts.join('. '):l.outcome;
+        connectMap[key]={row:l.ri,bank:b.d[C.BANK],outcome:l.outcome,note:cleanNote,who:l.who,isDM:DM_WHO.includes(l.who)};
+      }
+    }
+  });
+  const connects=Object.values(connectMap);
+  // Split into the two groups — each bank appears in exactly one
+  const dmReached=connects.filter(c=>c.isDM);
+  const gkReached=connects.filter(c=>!c.isDM);
+
+  // Declined today
+  const declinedToday=[],seenDec=new Set();
+  // Use the merged list (app logs + sheet scan) so declines on the sheet today always show
+  calledLogs.filter(l=>l.outcome==='Decline').forEach(l=>{
+    if(!seenDec.has(l.ri)){seenDec.add(l.ri);const b=banks.find(x=>x.ri===l.ri);if(b)declinedToday.push({row:l.ri,bank:b.d[C.BANK],role:l.role});}
+  });
+  // Also catch app-side decline markers not in calledLogs
+  all.filter(l=>l.outcome==='Decline').forEach(l=>{
+    if(!seenDec.has(l.ri)){seenDec.add(l.ri);const b=banks.find(x=>x.ri===l.ri);if(b)declinedToday.push({row:l.ri,bank:b.d[C.BANK],role:l.role});}
+  });
+
+  // Appointments
+  const appointments=connects.filter(c=>c.outcome==='Expressed Interest');
+
+  // SOS grouped by bank — only flags from TODAY, not auto-detected from sheet
+  const sosByBank={};
+  Object.values(flags).filter(f=>!f.undone&&!f.fromSheet&&f.date===workDate).forEach(f=>{
+    const b=banks.find(x=>x.ri===f.ri);if(!b)return;
+    const key=f.ri+'|||'+b.d[C.BANK];if(!sosByBank[key])sosByBank[key]={row:f.ri,bank:b.d[C.BANK],entries:[]};
+    sosByBank[key].entries.push(f);
+  });
+
+  st('eod-sub',cfg.name+' · '+workDateDisplay());
+  el('eod-dials').value=appDials;
+
+  // Clean bank name: ALL-CAPS words become Title Case, mixed-case (EagleBank) kept as-is
+  const cleanBank=(s)=>String(s||'').replace(/\u00a0/g,' ').trim().split(/\s+/).map(w=>{
+    if(w.length>2&&w===w.toUpperCase()&&/[A-Z]/.test(w)){
+      const low=w.toLowerCase();
+      if(['of','and','the'].includes(low))return low;
+      return low.charAt(0).toUpperCase()+low.slice(1);
+    }
+    return w;
+  }).join(' ');
+  // Clean issue: strip parenthetical descriptions
+  const cleanIssue=(s)=>String(s||'').replace(/\s*\([^)]*\)/g,'').replace(/—/g,',').trim();
+
+  const buildText=(dials)=>{
+    const cr=dials>0?((peopleReached/dials)*100).toFixed(2)+'%':'0.00%';
+    const apptDM=peopleReached>0?((appointments.length/peopleReached)*100).toFixed(2)+'%':'0.00%';
+    const apptDials=dials>0?((appointments.length/dials)*100).toFixed(2)+'%':'0.00%';
+    let t='Today | '+workDateDisplay()+'\n';
+    t+='Total Dials Made | '+dials+'\n';
+    t+='EA/CRA/CEO/CFO Reached | '+peopleReached+'\n';
+    t+='EA/CRA/CEO Contact Rate (%) | '+cr+'\n';
+    t+='Appointments Booked | '+appointments.length+'\n';
+    t+='Appointment based on DM reached | '+apptDM+'\n';
+    t+='Appointment based on Dials | '+apptDials+'\n';
+    t+='Total Banks Reached | '+banksReached+'\n';
+
+    t+='\nDecision Makers Reached\n\n';
+    if(dmReached.length){
+      dmReached.slice().sort((a,b)=>a.row-b.row).forEach(c=>{
+        const note=c.note.replace(/\.+$/,'').trim();
+        t+='Row '+c.row+' | '+cleanBank(c.bank)+' | '+c.who+' | '+note+'\n';
+      });
+    }else{t+='None\n';}
+
+    t+='\nBanks Reached\n\n';
+    if(gkReached.length){
+      gkReached.slice().sort((a,b)=>a.row-b.row).forEach(c=>{
+        t+='Row '+c.row+' | '+cleanBank(c.bank)+'\n';
+      });
+    }else{t+='None\n';}
+
+    if(declinedToday.length){
+      t+='\nBanks Declined Today\n\n';
+      declinedToday.slice().sort((a,b)=>a.row-b.row).forEach(x=>{t+='Row '+x.row+' | '+cleanBank(x.bank)+' | declined by '+x.role+'\n';});
+    }
+
+
+
+    // Leads marked "does not exist" AND opted into report
+    const dneList=Object.values(dne).filter(x=>!x.undone&&x.inReport)
+      .sort((a,b)=>a.ri-b.ri).map(x=>{
+        const b=banks.find(bb=>bb.ri===x.ri);
+        return 'Row '+x.ri+' | '+cleanBank(b?b.d[C.BANK]:'')+' | '+x.role+(x.name?' '+x.name:'')+' | not in bank system';
+      });
+    if(dneList.length){t+='\nLeads Not In Bank System\n\n';dneList.forEach(l=>t+=l+'\n');}
+
+    // Flagged Numbers: only flags created/hit TODAY (real calendar date), merged by digits, sorted by row
+    const _today=realToday();
+    const todayFlags=Object.values(flags).filter(f=>!f.undone&&!f.fromSheet&&f.dateReal===_today);
+    const hqToday=Object.values(hqFlags).filter(f=>!f.undone&&f.dateReal===_today);
+    if(todayFlags.length||hqToday.length){
+      t+='\nFlagged Numbers\n\n';
+      const byBank={};
+      const fmt10=(ph)=>{const dg=phoneDigits(ph);return dg.length===10?dg.slice(0,3)+'.'+dg.slice(3,6)+'.'+dg.slice(6):phoneBase(ph);};
+      todayFlags.forEach(f=>{
+        if(!byBank[f.ri])byBank[f.ri]={};
+        const digits=phoneDigits(f.phone)||phoneBase(f.phone);
+        if(!byBank[f.ri][digits])byBank[f.ri][digits]={roles:[],issue:cleanIssue(f.issue),display:fmt10(f.phone)};
+        if(!byBank[f.ri][digits].roles.includes(f.role))byBank[f.ri][digits].roles.push(f.role);
+      });
+      hqToday.forEach(f=>{
+        if(!byBank[f.ri])byBank[f.ri]={};
+        const digits='HQ'+(phoneDigits(f.phone)||f.phone);
+        byBank[f.ri][digits]={roles:['HQ'],issue:cleanIssue(f.issue),display:fmt10(f.phone)};
+      });
+      Object.keys(byBank).map(Number).sort((a,b)=>a-b).forEach(ri=>{
+        const b=banks.find(x=>x.ri===ri);
+        const bankName=cleanBank(b?b.d[C.BANK]:'');
+        Object.values(byBank[ri]).forEach(info=>{
+          t+='Row '+ri+' | '+bankName+' | '+info.roles.join(' & ')+' '+info.display+' | '+info.issue+'\n';
+        });
+      });
+    }
+    return t.trim();
+  };
+
+  el('eod-text').textContent=buildText(appDials);
+  el('eod-dials').oninput=function(){el('eod-text').textContent=buildText(parseInt(this.value)||appDials);};
+  el('eod-modal').classList.remove('hidden');
+}
+function closeEOD(){el('eod-modal').classList.add('hidden');}
+function copyReport(){navigator.clipboard.writeText(el('eod-text').textContent).then(()=>toast('Report copied ✓','success')).catch(()=>toast('Select and copy manually','error'));}
+
+function clearDayLogs(){
+  if(!confirm('Clear all logged calls for '+workDateDisplay()+'?\n\nThis resets your stats but does not undo sheet writes.'))return;
+  const pfx=workDate+'__';Object.keys(logs).filter(k=>k.startsWith(pfx)).forEach(k=>{(logs[k]||[]).forEach(l=>l.deleted=true);});
+  saveLogs();renderStats();if(openRI)renderBody(openRI);applyFilters(false);toast('Day cleared','success');
+}
+
+function showSettings(){sv('set-name',cfg.name||'');sv('set-sheet-id',cfg.sheetId||'');sv('set-tab',cfg.tab||'');sv('set-update-id',cfg.updateSheetId||'');sv('set-update-tab',cfg.updateTab||'');sv('set-followup-tab',cfg.followupTab||'');sv('set-priority-tab',cfg.priorityTab||'');sv('set-api-key',cfg.apiKey||'');el('settings-modal').classList.remove('hidden');}
+function closeSettings(){el('settings-modal').classList.add('hidden');}
+function saveSettings(){
+  cfg.name=gv('set-name').trim();cfg.sheetId=gv('set-sheet-id').trim();cfg.tab=gv('set-tab').trim();cfg.updateSheetId=gv('set-update-id').trim();cfg.updateTab=gv('set-update-tab').trim();cfg.followupTab=gv('set-followup-tab').trim();cfg.priorityTab=gv('set-priority-tab').trim();cfg.apiKey=gv('set-api-key').trim();
+  saveCfg();closeSettings();st('rep-badge',cfg.name);toast('Settings saved — reloading...','success');setTimeout(()=>loadSheet(),500);
+}
+
+function rebuildCard(ri,removeFromList){
+  // Refresh current bank view if it's the current bank.
+  // NEVER remove from the list or shift position while the user is on it —
+  // just mark the list stale so it rebuilds on the next Next/Prev.
+  if(removeFromList)listDirty=true;
+  if(navList.length&&navList[navIdx]&&navList[navIdx].ri===ri){
+    showCurrentBank();
+  }
+  renderStats();
+}
+
+function copyPhone(phone,btn){
+  navigator.clipboard.writeText(phone).then(()=>{const o=btn.textContent;btn.textContent='✓';setTimeout(()=>btn.textContent=o,1500);})
+  .catch(()=>{const ta=document.createElement('textarea');ta.value=phone;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);const o=btn.textContent;btn.textContent='✓';setTimeout(()=>btn.textContent=o,1500);});
+}
+
+// ================= STORAGE SAFETY (v57) =================
+// The browser caps this site at ~5MB. When full, setItem throws and a save is lost.
+// These helpers never let that happen silently: they free room by archiving old
+// logged days (the full history is backed up separately) and warn loudly if they can't.
+function dateKeyTime(k){
+  const d=String(k).split('__')[0]; const p=d.split('/');
+  if(p.length!==3)return 0; // malformed date -> treat as oldest
+  const t=Date.parse(p[2]+'-'+String(p[0]).padStart(2,'0')+'-'+String(p[1]).padStart(2,'0'));
+  return isNaN(t)?0:t;
+}
+function pruneLogs(keepDays){
+  const cutoff=Date.now()-keepDays*864e5; let removed=0;
+  Object.keys(logs).forEach(k=>{
+    const t=dateKeyTime(k);
+    if((t && t<cutoff) || (!t && !(logs[k]&&logs[k].length))){delete logs[k];removed++;}
+  });
+  return removed;
+}
+function storageUsage(){let n=0;try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);n+=k.length+(localStorage.getItem(k)||'').length;}}catch(e){}return n;}
+// quota-safe write. Returns true if saved. On a full-storage error it archives old
+// days and retries, so the current call is never lost to a silent failure.
+function ls(key,val){
+  try{localStorage.setItem(key,val);return true;}
+  catch(e){
+    for(const days of [120,90,60,45,30,21,14,10,7,5,3]){
+      pruneLogs(days);
+      try{
+        localStorage.setItem(LOGS_KEY,JSON.stringify(logs));
+        localStorage.setItem(key,val);
+        storageBanner('Freed space by archiving old days. Your recent calls are saving normally. Tip: hit Backup to keep a copy.', 'ok');
+        return true;
+      }catch(_){/* keep pruning */}
+    }
+    storageBanner('STORAGE FULL — this call did NOT save. Hit Backup now, then tell Claude.', 'bad');
+    return false;
+  }
+}
+function storageBanner(msg,kind){
+  let b=document.getElementById('storage-banner');
+  if(!b){b=document.createElement('div');b.id='storage-banner';document.body.appendChild(b);}
+  b.className='storage-banner '+(kind==='bad'?'sb-bad':'sb-ok');
+  b.innerHTML='<span>'+msg+'</span><button onclick="exportBackup()">Backup</button><button onclick="this.parentElement.remove()">✕</button>';
+}
+// Download a full backup of everything in storage (same as the rescue page).
+function exportBackup(){
+  try{
+    const dump={};for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);dump[k]=localStorage.getItem(k);}
+    const blob=new Blob([JSON.stringify(dump,null,2)],{type:'application/json'});
+    const d=new Date(),st=d.getFullYear()+''+(d.getMonth()+1)+''+d.getDate()+'_'+d.getHours()+''+d.getMinutes();
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='call_backup_'+st+'.json';
+    document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1500);
+    toast('Backup downloaded ✓','success');
+  }catch(e){toast('Backup failed: '+e,'error');}
+}
+// Run once on startup: if storage is tight, archive old days so today always has room.
+function ensureStorageHeadroom(){
+  if(storageUsage()>4.2*1024*1024){
+    const n=pruneLogs(45);
+    try{localStorage.setItem(LOGS_KEY,JSON.stringify(logs));}catch(e){pruneLogs(21);try{localStorage.setItem(LOGS_KEY,JSON.stringify(logs));}catch(_){}}
+    if(n)storageBanner('Made room for today by archiving days older than 45 days (your full history is in your backups).','ok');
+  }
+}
+function loadCfg(){try{return JSON.parse(localStorage.getItem(CFG_KEY))||{};}catch{return{};}}
+function saveCfg(){ls(CFG_KEY,JSON.stringify(cfg));}
+function loadLogs(){try{return JSON.parse(localStorage.getItem(LOGS_KEY))||{};}catch{return{};}}
+function saveLogs(){ls(LOGS_KEY,JSON.stringify(logs));}
+function loadFlags(){try{return JSON.parse(localStorage.getItem(FLAGS_KEY))||{};}catch{return{};}}
+function saveFlags(){ls(FLAGS_KEY,JSON.stringify(flags));}
+function loadCalls(){try{return JSON.parse(localStorage.getItem(CALLS_KEY))||{};}catch{return{};}}
+function saveCalls(){ls(CALLS_KEY,JSON.stringify(calls));}
+function loadCallMeta(){try{return JSON.parse(localStorage.getItem(CALLMETA_KEY))||{};}catch{return{};}}
+function loadBlackbox(){try{return JSON.parse(localStorage.getItem(BLACKBOX_KEY))||{};}catch{return{};}}
+function saveBlackbox(){ls(BLACKBOX_KEY,JSON.stringify(blackbox));}
+function isBlackbox(ri,role,ph){return !!blackbox[bankId(ri)+'__'+role+'__'+phoneDigits(ph)];}
+
+// ── HQ number flags & counters (app only) ──
+function loadHQFlags(){try{return JSON.parse(localStorage.getItem(HQFLAG_KEY))||{};}catch{return{};}}
+function saveHQFlags(){ls(HQFLAG_KEY,JSON.stringify(hqFlags));}
+function loadHQMeta(){try{return JSON.parse(localStorage.getItem(HQMETA_KEY))||{};}catch{return{};}}
+function saveHQMeta(){ls(HQMETA_KEY,JSON.stringify(hqMeta));}
+function loadDNE(){try{return JSON.parse(localStorage.getItem(DNE_KEY))||{};}catch{return{};}}
+function saveDNE(){ls(DNE_KEY,JSON.stringify(dne));}
+function loadAFU(){try{return JSON.parse(localStorage.getItem(AFU_KEY))||{};}catch{return{};}}
+function saveAFU(){ls(AFU_KEY,JSON.stringify(appFU));}
+function exportBackup(){
+  const data={};
+  ['cdt3_logs','cdt3_flags','cdt3_calls','cdt3_callmeta','cdt3_blackbox','cdt3_hqflags','cdt3_hqmeta','cdt3_dne','cdt3_appfu','cdt3_parked','cdt3_appt','cdt3_email','cdt3_config'].forEach(k=>{
+    const v=localStorage.getItem(k);if(v)data[k]=v;
+  });
+  const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='caller-dashboard-backup-'+workDateDisplay().replace(/\//g,'-')+'.json';
+  a.click();
+  toast('Backup downloaded','success');
+}
+function importBackup(){
+  const inp=document.createElement('input');inp.type='file';inp.accept='.json';
+  inp.onchange=()=>{
+    const file=inp.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=()=>{
+      try{
+        const data=JSON.parse(reader.result);
+        Object.entries(data).forEach(([k,v])=>localStorage.setItem(k,v));
+        toast('Backup restored, reloading...','success');
+        setTimeout(()=>location.reload(),800);
+      }catch(e){toast('Invalid backup file','error');}
+    };
+    reader.readAsText(file);
+  };
+  inp.click();
+}
+function loadParked(){try{return JSON.parse(localStorage.getItem(PARKED_KEY))||{};}catch{return{};}}
+function saveParked(){ls(PARKED_KEY,JSON.stringify(parked));}
+function loadFUD(){try{return JSON.parse(localStorage.getItem(FUD_KEY))||{};}catch{return{};}}
+function saveFUD(){ls(FUD_KEY,JSON.stringify(fud));}
+function loadLeadFlags(){try{return JSON.parse(localStorage.getItem(LEADFLAG_KEY))||{};}catch{return{};}}
+function saveLeadFlags(){ls(LEADFLAG_KEY,JSON.stringify(leadFlags));}
+function getLeadFlag(ri,role){const x=leadFlags[bankId(ri)+'__'+role];return(x&&!x.undone)?x:null;}
+function editEA(ri,role){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  const rc=RC[role];if(rc.ea==null)return;
+  const cur=String(b.d[rc.ea]||'').trim();
+  const val=prompt('Executive Assistant for this lead (writes to the EA column on the sheet):',cur);
+  if(val===null)return;
+  b.d[rc.ea]=val.trim();
+  writeSheet([{row:ri,col:rc.ea,value:b.d[rc.ea]}]);
+  showCurrentBank();
+  toast(val.trim()?'EA saved':'EA cleared','success');
+}
+
+// Edit the lead's NAME and write it to the sheet
+function editLeadName(ri,role){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;const rc=RC[role];
+  const cur=String(b.d[rc.name]||'').trim();
+  const val=prompt(role+' name for this bank (this writes to the name column on the sheet):',cur);
+  if(val===null)return;
+  b.d[rc.name]=val.trim();
+  writeSheet([{row:ri,col:rc.name,value:b.d[rc.name]}]);
+  if(typeof snapLead==='function')snapLead(ri,role);
+  showCurrentBank();toast(val.trim()?'Name updated on the sheet':'Name cleared','success');
+}
+// Edit ALL numbers for the lead (add / change / remove) and write to the sheet
+function editNumbers(ri,role){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;const rc=RC[role];
+  const cur=String(b.d[rc.phone]||'').trim();
+  const val=prompt('Edit numbers for this '+role+' (writes to the sheet).\n\n'
+    +'Separate multiple numbers with a semicolon:  000.000.0000 ; 000.000.0000\n'
+    +'Add = type a new one at the end after " ; "\n'
+    +'Change = fix the number in place\n'
+    +'Remove = delete it\n'
+    +'Extension = put a comma then the ext, e.g.  000.000.0000, ext 205',cur);
+  if(val===null)return;
+  // normalise spacing around separators
+  const cleaned=val.split(';').map(s=>s.trim()).filter(Boolean).join('; ');
+  b.d[rc.phone]=cleaned;
+  writeSheet([{row:ri,col:rc.phone,value:cleaned}]);
+  if(typeof snapLead==='function')snapLead(ri,role);
+  showCurrentBank();toast('Numbers updated on the sheet','success');
+}
+
+function flagLead(ri,role){
+  const cur=getLeadFlag(ri,role);
+  const text=prompt('Flag this lead (app only). Enter your reason:',cur?cur.text:'');
+  if(text===null)return;
+  if(!text.trim()){if(cur){leadFlags[bankId(ri)+'__'+role].undone=true;saveLeadFlags();showCurrentBank();toast('Lead flag removed','success');}return;}
+  leadFlags[bankId(ri)+'__'+role]={ri,role,text:text.trim(),date:workDate,undone:false};
+  saveLeadFlags();showCurrentBank();toast('Lead flagged (app only)','success');
+}
+function unflagLead(ri,role){
+  const k=bankId(ri)+'__'+role;
+  if(leadFlags[k]){leadFlags[k].undone=true;saveLeadFlags();showCurrentBank();toast('Lead flag removed','success');}
+}
+function loadAppNums(){try{return JSON.parse(localStorage.getItem(APPNUM_KEY))||{};}catch{return{};}}
+function saveAppNums(){ls(APPNUM_KEY,JSON.stringify(appNums));}
+function loadStopMark(){try{return JSON.parse(localStorage.getItem(STOPMARK_KEY));}catch{return null;}}
+function saveStopMark(){ls(STOPMARK_KEY,JSON.stringify(stopMark));}
+function loadDirectLines(){try{return JSON.parse(localStorage.getItem(DIRECTLINE_KEY))||{};}catch{return{};}}
+function saveDirectLines(){ls(DIRECTLINE_KEY,JSON.stringify(directLines));}
+function loadLeadSnap(){try{return JSON.parse(localStorage.getItem(LEADSNAP_KEY))||{};}catch{return{};}}
+function saveLeadSnap(){ls(LEADSNAP_KEY,JSON.stringify(leadSnap));}
+function loadNoPolicy(){try{return JSON.parse(localStorage.getItem(NOPOLICY_KEY))||{};}catch{return{};}}
+function saveNoPolicy(){ls(NOPOLICY_KEY,JSON.stringify(noPolicy));}
+function hasNoPolicy(ri){return !!noPolicy[bankId(ri)];}
+function loadNoEmp(){try{return JSON.parse(localStorage.getItem(NOEMP_KEY))||{};}catch{return{};}}
+function saveNoEmp(){ls(NOEMP_KEY,JSON.stringify(noEmp));}
+function loadHiddenNums(){try{return JSON.parse(localStorage.getItem(HIDDENNUM_KEY))||{};}catch{return{};}}
+function saveHiddenNums(){ls(HIDDENNUM_KEY,JSON.stringify(hiddenNums));}
+function loadOffCallList(){try{return JSON.parse(localStorage.getItem(OFFCALL_KEY))||{};}catch{return{};}}
+function saveOffCallList(){ls(OFFCALL_KEY,JSON.stringify(offCallList));}
+function hasNoEmp(ri){return !!noEmp[bankId(ri)];}
+function toggleNoEmp(ri){
+  const k=bankId(ri);
+  if(noEmp[k]){delete noEmp[k];toast('Employee-info policy tag removed','success');}
+  else{noEmp[k]=true;toast('Tagged: bank will not give employee information','success');}
+  saveNoEmp();showCurrentBank();
+}
+function toggleNoPolicy(ri){
+  const k=bankId(ri);
+  if(noPolicy[k]){delete noPolicy[k];toast('Policy tag removed','success');}
+  else{noPolicy[k]=true;toast('Tagged: bank will not give the direct number','success');}
+  saveNoPolicy();showCurrentBank();
+}
+function snapLead(ri,role){
+  // Record name + phone as they are now (called right after a successful log)
+  const b=banks.find(x=>x.ri===ri);if(!b)return;const rc=RC[role];
+  leadSnap[bankId(ri)+'__'+role]={name:String(b.d[rc.name]||'').trim(),phone:String(b.d[rc.phone]||'').trim()};
+  saveLeadSnap();
+}
+function leadChanged(ri,role){
+  // True if the sheet's name/phone now differs from the snapshot taken at the last call
+  const snap=leadSnap[bankId(ri)+'__'+role];
+  if(!snap)return false; // never called through the app -> no baseline, no notice
+  const b=banks.find(x=>x.ri===ri);if(!b)return false;const rc=RC[role];
+  const curName=String(b.d[rc.name]||'').trim(), curPhone=String(b.d[rc.phone]||'').trim();
+  const changed=[];
+  if(curName!==snap.name)changed.push('name');
+  if(curPhone!==snap.phone)changed.push('number');
+  return changed.length?changed.join(' & '):false;
+}
+function isDirectLine(ri,role,phone){return directLines[bankId(ri)+'__'+role]===phoneDigits(phone);}
+function toggleDirectLine(ri,role,base){
+  const k=bankId(ri)+'__'+role, dg=phoneDigits(base);
+  if(directLines[k]===dg){delete directLines[k];toast('Direct line unmarked','success');}
+  else{directLines[k]=dg;toast('Marked as the lead\'s direct line','success');}
+  saveDirectLines();showCurrentBank();
+}
+function realToday(){
+  const d=new Date();
+  return (d.getMonth()+1)+'/'+d.getDate()+'/'+d.getFullYear();
+}
+function setStopHere(ri){
+  stopMark={ri,date:realToday()};saveStopMark();
+  showCurrentBank();
+  toast('Marked. Next time you open, you resume from the next bank','success');
+}
+function getAppNums(ri,role){return appNums[bankId(ri)+'__'+role]||[];}
+function addAppNum(ri,role){
+  const num=prompt('Add a number for this lead (app only, never written to the sheet):');
+  if(num===null||!num.trim())return;
+  const k=bankId(ri)+'__'+role;
+  if(!appNums[k])appNums[k]=[];
+  appNums[k].push(num.trim());
+  saveAppNums();showCurrentBank();toast('Number added (app only)','success');
+}
+// Add a number and CHOOSE: write it to the sheet, or keep it app-only.
+// Uses an in-app modal (not native prompt/confirm, which can be blocked on mobile
+// webviews and silently fall through to app-only). addNumCtx carries the target.
+let addNumCtx=null;
+function addNumber(ri,role){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  addNumCtx={ri,role};
+  st('nm-title',(b.d[C.BANK]||'')+' — '+role+': add a number');
+  st('nm-sub','Type the number, then choose where it goes.');
+  let html='';
+  html+='<div class="form-group"><label>New number</label>';
+  html+='<input id="addnum-input" type="text" inputmode="tel" autocomplete="off" placeholder="000.000.0000  (optional: , ext 205)" style="width:100%"></div>';
+  html+='<div class="form-group"><label>Mark where this number came from</label><select id="addnum-src">';
+  html+='<option value="">BOCA team (default)</option>';
+  html+='<option value="hajra">Hajra (lead-gen sheet)</option>';
+  html+='</select></div>';
+  html+='<div class="addnum-choice">';
+  html+='<button class="btn-primary" onclick="confirmAddNumber(\'sheet\')">Save to the SHEET<br><span class="btn-sub">the team sees it</span></button>';
+  html+='<button class="btn-appdark" onclick="confirmAddNumber(\'app\')">APP ONLY<br><span class="btn-sub">just you, not on the sheet</span></button>';
+  html+='</div>';
+  html+='<div class="modal-actions" style="margin-top:12px"><button class="btn-cancel" onclick="closeNumModal()">Cancel</button></div>';
+  el('nm-body').innerHTML=html;el('num-modal').classList.remove('hidden');
+  setTimeout(()=>{const i=el('addnum-input');if(i)i.focus();},60);
+}
+function confirmAddNumber(dest){
+  if(!addNumCtx)return;
+  const {ri,role}=addNumCtx;
+  const b=banks.find(x=>x.ri===ri);if(!b){closeNumModal();return;}
+  const rc=RC[role];
+  let n=String(gv('addnum-input')||'').trim();
+  if(!n){toast('Type a number first','error');const i=el('addnum-input');if(i)i.focus();return;}
+  const src=gv('addnum-src');
+  if(src==='hajra'&&!/\(hajra/i.test(n))n=n+' (Hajra)';
+  if(dest==='sheet'){
+    const cur=String(b.d[rc.phone]||'').trim();
+    b.d[rc.phone]=cur?cur+'; '+n:n;
+    writeSheet([{row:ri,col:rc.phone,value:b.d[rc.phone]}]);
+    if(typeof snapLead==='function')snapLead(ri,role);
+    closeNumModal();showCurrentBank();
+    toast('Added to the sheet — reload to confirm it saved','success');
+  }else{
+    const k=bankId(ri)+'__'+role;
+    if(!appNums[k])appNums[k]=[];
+    appNums[k].push(n);
+    saveAppNums();closeNumModal();showCurrentBank();
+    toast('Number added (app only)','success');
+  }
+  addNumCtx=null;
+}
+function removeAppNum(ri,role,idx){
+  const k=bankId(ri)+'__'+role;
+  if(appNums[k]){appNums[k].splice(idx,1);saveAppNums();showCurrentBank();toast('App number removed','success');}
+}
+// Undo a flag on a specific number (card button)
+function undoNumFlag(ri,role,base){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;const rc=RC[role];
+  const ph=parsePhones(b.d[rc.phone]).find(p=>phoneBase(p)===base)||base;
+  undoFlag(ri,role,ph);
+}
+// Delete a flagged (dead) number — choose sheet removal or app-only hide
+function deleteFlaggedNum(ri,role,base){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;const rc=RC[role];
+  if(!isPhoneBad(ri,role,base)&&!parsePhones(b.d[rc.phone]).some(p=>phoneBase(p)===base&&isPhoneBad(ri,role,p))){
+    toast('You can only delete a number that is flagged','error');return;
+  }
+  const choice=prompt('Delete '+base+' — type:\n  "sheet" to remove it from the sheet\n  "app" to hide it in the app only\n  (anything else cancels)');
+  if(!choice)return;
+  const c=choice.trim().toLowerCase();
+  if(c==='sheet'){
+    // Remove the matching number from the phone cell, keep any others
+    const kept=parsePhones(b.d[rc.phone]).filter(p=>phoneBase(p)!==base);
+    b.d[rc.phone]=kept.join('; ');
+    writeSheet([{row:ri,col:rc.phone,value:b.d[rc.phone]}]);
+    // clear its flag too
+    const fk=getFlagKey(ri,role,base);if(flags[fk]){flags[fk].undone=true;saveFlags();}
+    showCurrentBank();toast('Number removed from the sheet','success');
+  }else if(c==='app'){
+    const k=bankId(ri)+'__'+role;
+    hiddenNums[k]=hiddenNums[k]||[];
+    if(!hiddenNums[k].includes(phoneDigits(base)))hiddenNums[k].push(phoneDigits(base));
+    saveHiddenNums();showCurrentBank();toast('Number hidden in the app (kept on sheet)','success');
+  }else{toast('Cancelled','success');}
+}
+// Add an extension/option to an existing number using the comma method (shows as a tag, not a new number)
+function addExtension(ri,role){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;const rc=RC[role];
+  const phones=parsePhones(b.d[rc.phone]);
+  if(!phones.length){toast('No number to attach an extension to','error');return;}
+  const which=phones.length===1?phones[0]:prompt('Which number? Type the number to attach the ext/option to:\n'+phones.map(p=>phoneBase(p)).join('\n'));
+  if(!which)return;
+  const target=phones.find(p=>phoneBase(p)===phoneBase(which));
+  if(!target){toast('That number was not found','error');return;}
+  const ext=prompt('Enter the extension or option, e.g. "ext 205" or "opt 3":');
+  if(!ext||!ext.trim())return;
+  // Rewrite that number with a comma + ext so the app shows it as a tag and copy stays clean
+  const newVal=phones.map(p=>p===target?(phoneBase(p)+', '+ext.trim()):p).join('; ');
+  b.d[rc.phone]=newVal;
+  writeSheet([{row:ri,col:rc.phone,value:newVal}]);
+  showCurrentBank();toast('Extension added','success');
+}
+// Take a lead off the call list (per-lead): grey + lock + write Do-not-call to the sheet
+function takeOffCallList(ri,role){
+  const b=banks.find(x=>x.ri===ri);if(!b)return;const rc=RC[role];
+  if(!confirm('Take this lead off the call list? They will be greyed out and locked, and "Do not call / opt-out" will be written to the sheet.'))return;
+  const k=bankId(ri)+'__'+role;
+  offCallList[k]=true;saveOffCallList();
+  // Write to the sheet: outcome + a dated note
+  const dateStr=workDateDisplay();
+  const existing=String(b.d[rc.notes]||'');
+  const note=(existing.includes(dateStr)?'':dateStr+'\n')+'Do not call / opt-out. Removed from call list.';
+  b.d[rc.notes]=existing?existing+'\n'+note:note;
+  b.d[rc.outcome]='Do not call / opt-out';
+  b.d[rc.recent]=dateStr;
+  writeSheet([
+    {row:ri,col:rc.notes,value:b.d[rc.notes]},
+    {row:ri,col:rc.outcome,value:b.d[rc.outcome]},
+    {row:ri,col:rc.recent,value:b.d[rc.recent]}
+  ]);
+  showCurrentBank();toast('Lead taken off the call list','success');
+}
+function restoreToCallList(ri,role){
+  const k=bankId(ri)+'__'+role;delete offCallList[k];saveOffCallList();
+  showCurrentBank();toast('Lead restored to call list','success');
+}
+function isOffCallList(ri,role){return !!offCallList[bankId(ri)+'__'+role];}
+function isNumHidden(ri,role,ph){const k=bankId(ri)+'__'+role;return (hiddenNums[k]||[]).includes(phoneDigits(ph));}
+function fudGet(ri){const k=bankId(ri);if(!fud[k])fud[k]={dials:{},done:{},lastTouch:0,nextDate:'',role:''};return fud[k];}
+function fudRole(ri){return fudGet(ri).role||fuByBank[bankId(ri)]?.role||'CEO';}
+function fudSetRole(ri,role){fudGet(ri).role=role;saveFUD();toast('Follow-up dials now go to '+role,'success');showCurrentBank();}
+function isFUBank(ri){return !!fuByBank[bankId(ri)];}
+function fuDoneToday(ri){return !!fudGet(ri).done[workDateDisplay()];}
+// FU bank is "active" (should surface first) when: not done today, next date is today or unset/past, and not touched in the last 3 hours
+function fuActive(ri){
+  if(isFuHidden(ri))return false;
+  if(!isFUBank(ri))return false;
+  const x=fudGet(ri);
+  const today=workDateDisplay();
+  if(x.done[today])return false;
+  if(x.nextDate){try{if(new Date(x.nextDate)>new Date(today))return false;}catch{}}
+  if(x.lastTouch&&(Date.now()-x.lastTouch)<3*60*60*1000)return false;
+  return true;
+}
+function loadFuHide(){try{return JSON.parse(localStorage.getItem(FUHIDE_KEY))||{};}catch{return{};}}
+function saveFuHide(){ls(FUHIDE_KEY,JSON.stringify(fuHide));}
+function isFuHidden(ri){return !!fuHide[bankId(ri)];}
+// Hide a follow-up bank from the app (keeps the row on the sheet)
+function hideFollowup(ri){
+  fuHide[bankId(ri)]=true;saveFuHide();
+  delete fuByBank[bankId(ri)];
+  closeLeadLog();listDirty=true;showCurrentBank();
+  toast('Follow-up hidden in app (row kept on sheet)','success');
+}
+// Delete a follow-up row from the Follow-Up sheet entirely (matched by bank name)
+function deleteFollowupRow(ri,silent){
+  const info=fuByBank[bankId(ri)];
+  const b=banks.find(x=>x.ri===ri);
+  const bankName=b?String(b.d[C.BANK]||''):'';
+  const fuTab=cfg.followupTab||'Follow-Up Sheet';
+  if(info&&info.f&&info.f.fri){
+    // delete by exact row number on the follow-up sheet
+    fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'deleteRow',sheetId:cfg.sheetId,tabName:fuTab,row:info.f.fri})}).catch(e=>console.error(e));
+  }else if(bankName){
+    // fallback: delete by bank name match
+    fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({type:'deleteRowByMatch',sheetId:cfg.sheetId,tabName:fuTab,matchCol:0,matchValue:bankName})}).catch(e=>console.error(e));
+  }
+  delete fuByBank[bankId(ri)];
+  if(!silent){closeLeadLog();listDirty=true;showCurrentBank();toast('Follow-up row removed from sheet','success');}
+}
+// Undo the follow-up just created this session
+function undoNewFollowup(ri){
+  if(!confirm('Remove the follow-up row you just added for this bank?'))return;
+  deleteFollowupRow(ri,false);
+}
+// Restore a hidden follow-up
+function unhideFollowup(ri){
+  delete fuHide[bankId(ri)];saveFuHide();
+  listDirty=true;showCurrentBank();
+  toast('Follow-up will show again (reload to re-pull from sheet)','success');
+}
+async function loadPriority(){
+  const pTab=cfg.priorityTab||'Priority Banks';
+  try{
+    const url=`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent("'"+pTab+"'")}?key=${cfg.apiKey}`;
+    const res=await fetch(url);const data=await res.json();
+    if(data.error){console.error('Priority load error',data.error.message);priorities=[];return;}
+    priorities=(data.values||[]).map((row,i)=>({pri:i+1,d:row})).slice(1)
+      .filter(p=>p.d[PRI.BANK]&&String(p.d[PRI.BANK]).trim());
+  }catch(e){console.error('Priority load failed',e);priorities=[];}
+}
+function buildPriByBank(){
+  priByBank={};
+  priorities.forEach(p=>{
+    const mb=findMainBank(String(p.d[PRI.BANK]||''));
+    if(mb)priByBank[bankId(mb.ri)]=p;
+  });
+}
+function isPriorityBank(ri){return !!priByBank[bankId(ri)];}
+// Mirror a lead's recent-call date + notes from the main sheet into the Priority tab
+function mirrorPriority(ri,role){
+  const p=priByBank[bankId(ri)];if(!p)return;
+  const pc=PRI[role];if(!pc)return;
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  const rc=RC[role];
+  const pTab=cfg.priorityTab||'Priority Banks';
+  fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({sheetId:cfg.sheetId,tabName:pTab,updates:[
+      {row:p.pri,col:pc.recent,value:b.d[rc.recent]||''},
+      {row:p.pri,col:pc.notes,value:b.d[rc.notes]||''}
+    ]})}).catch(e=>console.error('Priority mirror failed',e));
+}
+
+function buildFuByBank(){
+  fuByBank={};
+  followups.forEach(f=>{
+    const mb=findMainBank(String(f.d[FU.BANK]||''));
+    if(mb)fuByBank[bankId(mb.ri)]={fri:f.fri,role:fuRole(f.d[FU.PERSON]),f};
+  });
+}
+function buildFUDBanner(ri){
+  const x=fudGet(ri);
+  const today=workDateDisplay();
+  const cnt=x.dials[today]||0;
+  const info=fuByBank[bankId(ri)];
+  const person=info?String(info.f.d[FU.PERSON]||''):'';
+  if(x.done[today]){
+    return '<div class="afu-banner" style="margin-top:6px">📌 Follow-up bank | ✓ done for today | '+cnt+' dials</div>';
+  }
+  const curRole=fudRole(ri);
+  let h='<div class="afu-banner" style="margin-top:6px">📌 Follow-up bank';
+  if(person)h+=' | '+esc(person);
+  h+=' | '+cnt+' dials today';
+  if(x.nextDate)h+=' | next: '+esc(x.nextDate);
+  h+='<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;align-items:center">';
+  h+='<select onchange="fudSetRole('+ri+',this.value)" style="width:auto;font-size:11px;padding:4px 6px" title="Which lead these dials belong to">';
+  ['CEO','CRA','CFO'].forEach(r=>{h+='<option value="'+r+'"'+(r===curRole?' selected':'')+'>'+r+'</option>';});
+  h+='</select>';
+  h+='<button class="btn-sm" style="background:var(--blue);color:#fff;border:none" onclick="fudDial('+ri+')">+1 dial</button>';
+  h+='<button class="btn-sm" onclick="fudUndoDial('+ri+')">↩ Undo dial</button>';
+  h+='<button class="btn-sm" style="background:var(--green-bg);color:var(--green);border-color:var(--green-border)" onclick="openFUDDone('+ri+')">✓ Done for today</button>';
+  h+='</div></div>';
+  return h;
+}
+
+function fudDial(ri){
+  const x=fudGet(ri);const today=workDateDisplay();
+  x.dials[today]=(x.dials[today]||0)+1;x.lastTouch=Date.now();saveFUD();
+  const dlog={id:genId(),ri,role:fudRole(ri),who:'NO CONTACT',outcome:'No Answer',called:true,dialCount:1,date:workDate,fudDial:true,deleted:false};
+  const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(dlog);saveLogs();
+  renderStats();showCurrentBank();
+  toast('+1 dial ('+x.dials[today]+' today)','success');
+}
+function fudUndoDial(ri){
+  const x=fudGet(ri);const today=workDateDisplay();
+  if(!(x.dials[today]>0)){toast('No dials to undo today','error');return;}
+  x.dials[today]--;saveFUD();
+  // Remove the most recent fudDial log entry for this bank today
+  const key=logKey(ri);
+  if(logs[key]){
+    for(let i=logs[key].length-1;i>=0;i--){
+      const l=logs[key][i];
+      if(l.fudDial&&!l.deleted&&l.ri===ri){l.deleted=true;break;}
+    }
+    saveLogs();
+  }
+  renderStats();showCurrentBank();
+  toast('Dial removed ('+x.dials[today]+' today)','success');
+}
+let fudCtx=null;
+function openFUDDone(ri){
+  const info=fuByBank[bankId(ri)];if(!info)return;
+  fudCtx={ri};
+  const b=banks.find(z=>z.ri===ri);if(!b)return;
+  const role=fudRole(ri);
+  const person=String(info.f.d[FU.PERSON]||'');
+  st('nm-title',b.d[C.BANK]+' | Follow-up done for today');
+  st('nm-sub','Row '+ri+' | '+person+' | One note for the day, writes to BOTH sheets');
+  let html='';
+  html+='<div class="form-group"><label>Lead on main sheet (both sheets update)</label><select id="fud-role">';
+  ['CEO','CRA','CFO'].forEach(r=>{html+='<option value="'+r+'"'+(r===(role||'CEO')?' selected':'')+'>'+r+(b.d[RC[r].name]?': '+esc(String(b.d[RC[r].name])):'')+'</option>';});
+  html+='</select></div>';
+  html+='<div class="form-grid">';
+  html+='<div class="form-group"><label>Who answered</label><select id="fud-who"><option value="NO CONTACT">NO CONTACT</option><option value="GK">GK</option><option value="EA">EA</option><option value="CEO">CEO</option><option value="CRA">CRA</option><option value="CFO">CFO</option></select></div>';
+  html+='<div class="form-group"><label>Outcome</label><select id="fud-outcome"><option>No Answer</option><option>Left Message</option><option>Check Back Later</option><option>Expressed Interest</option><option>Follow-up</option><option>Email requested/ Follow-up</option><option>Decline</option></select></div>';
+  html+='</div>';
+  html+='<div class="form-group"><label>Today\'s note (goes to main sheet and follow-up sheet)</label><textarea id="fud-note" rows="3" placeholder="What happened across your calls today?"></textarea></div>';
+  html+='<div class="form-group"><label>Next follow-up date, app only (M/D/YYYY, blank = surface again tomorrow)</label><input type="text" id="fud-next" placeholder="e.g. 7/17/2026"/></div>';
+  html+='<div class="modal-actions"><button class="btn-primary" onclick="saveFUDDone()">Save, done for today</button><button class="btn-cancel" onclick="closeNumModal()">Cancel</button></div>';
+  el('nm-body').innerHTML=html;
+  el('num-modal').classList.remove('hidden');
+}
+function saveFUDDone(){
+  if(!fudCtx)return;
+  const {ri}=fudCtx;fudCtx=null;
+  const info=fuByBank[bankId(ri)];if(!info)return;
+  const b=banks.find(z=>z.ri===ri);if(!b)return;
+  const role=el('fud-role')?.value||fudRole(ri);
+  fudGet(ri).role=role; // remember for future +1 dials
+  const who=el('fud-who')?.value||'NO CONTACT';
+  const outcome=el('fud-outcome')?.value||'No Answer';
+  const note=el('fud-note')?.value.trim()||'';
+  const nextDate=el('fud-next')?.value.trim()||'';
+  if(nextDate&&!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(nextDate)){toast('Use M/D/YYYY format','error');return;}
+  const dateStr=workDateDisplay();
+  // MAIN SHEET (only when a role is known)
+  if(role&&RC[role]){
+    const d=b.d,rc=RC[role];
+    const existing=String(d[rc.notes]||'');
+    const before={recent:d[rc.recent]||'',times:String(parseInt(d[rc.times])||0),outcome:d[rc.outcome]||'',who:d[rc.who]||'',notes:existing};
+    let noteEntry='';
+    if(note){
+      noteEntry=existing.includes(dateStr)?note:(dateStr+'\n'+note);
+      d[rc.notes]=existing?existing+'\n'+noteEntry:noteEntry;
+    }
+    d[rc.recent]=dateStr;
+    d[rc.times]=String((parseInt(d[rc.times])||0)+1);
+    d[rc.outcome]=outcome;d[rc.who]=who;
+    const logEntry={id:genId(),ri,role,who,outcome,noteEntry,noteText:note,notesTxt:note,spokeTo:'',newNum:'',phone:'',called:true,dialCount:0,date:workDate,before,deleted:false,fudNote:true};
+    const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(logEntry);saveLogs();
+    writeSheet([
+      {row:ri,col:rc.notes,value:d[rc.notes]||''},
+      {row:ri,col:rc.recent,value:d[rc.recent]},
+      {row:ri,col:rc.times,value:d[rc.times]},
+      {row:ri,col:rc.outcome,value:d[rc.outcome]},
+      {row:ri,col:rc.who,value:d[rc.who]}
+    ]);
+    mirrorPriority(ri,role);
+  }
+  // FOLLOW-UP SHEET
+  const f=info.f,fd=f.d;
+  fd[FU.FOLLOWUP]=dateStr;
+  fd[FU.TIMES]=String((parseInt(fd[FU.TIMES])||0)+1);
+  if(note){
+    const ex=String(fd[FU.NOTES]||'');
+    const entry=dateStr+': '+note;
+    fd[FU.NOTES]=ex?ex+'\n'+entry:entry;
+  }
+  const fuTab=cfg.followupTab||'Follow-Up Sheet';
+  fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({sheetId:cfg.sheetId,tabName:fuTab,updates:[
+      {row:f.fri,col:FU.FOLLOWUP,value:fd[FU.FOLLOWUP]},
+      {row:f.fri,col:FU.TIMES,value:fd[FU.TIMES]},
+      {row:f.fri,col:FU.NOTES,value:fd[FU.NOTES]||''}
+    ]})}).catch(e=>console.error(e));
+  // APP: done for today + next date (app only)
+  const x=fudGet(ri);
+  x.done[dateStr]=true;
+  x.nextDate=nextDate;
+  saveFUD();
+  renderStats();closeNumModal();listDirty=true;showCurrentBank();
+  toast('Done for today ✓ Both sheets updated','success');
+}
+function isParked(ri){return !!parked[bankId(ri)];}
+function toggleParked(ri){
+  const k=bankId(ri);
+  if(parked[k]){delete parked[k];toast('Moved back to main list','success');}
+  else{parked[k]=true;toast('Moved to parked list (app only)','success');}
+  saveParked();
+  listDirty=true;showCurrentBank();
+}
+function afuKey(ri,role){return bankId(ri)+'__'+role;}
+function getAFU(ri,role){const x=appFU[afuKey(ri,role)];return(x&&!x.done)?x:null;}
+function afuDueToday(ri,role){const x=getAFU(ri,role);return x&&x.date===workDateDisplay();}
+function bankHasDueAFU(ri){return['CEO','CRA','CFO'].some(r=>afuDueToday(ri,r));}
+function setAppFollowup(){
+  if(!numCtx)return;
+  const {ri,role}=numCtx;
+  const date=prompt('Follow up with this lead on what date? (M/D/YYYY)');
+  if(date===null||!date.trim())return;
+  if(!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(date.trim())){toast('Use M/D/YYYY format','error');return;}
+  appFU[afuKey(ri,role)]={ri,role,date:date.trim(),done:false,dials:{},created:workDate};
+  saveAFU();
+  toast('Follow-up set for '+date.trim()+' (app only)','success');
+}
+function afuDial(ri,role){
+  const x=appFU[afuKey(ri,role)];if(!x)return;
+  const today=workDateDisplay();
+  x.dials[today]=(x.dials[today]||0)+1;saveAFU();
+  // Dial-only log so daily dials count it (no sheet write, no note)
+  const dlog={id:genId(),ri,role,who:'NO CONTACT',outcome:'No Answer',called:true,dialCount:1,date:workDate,afuDial:true,deleted:false};
+  const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(dlog);saveLogs();
+  renderStats();showCurrentBank();
+  toast('+1 dial ('+x.dials[today]+' today)','success');
+}
+let afuCtx=null;
+function openAFUModal(ri,role){
+  const x=appFU[afuKey(ri,role)];if(!x)return;
+  afuCtx={ri,role};
+  const b=banks.find(z=>z.ri===ri);if(!b)return;
+  const d=b.d,rc=RC[role];
+  const today=workDateDisplay();
+  st('nm-title',d[C.BANK]+' — Follow-up: '+role+' '+(d[rc.name]||''));
+  st('nm-sub','Row '+ri+' · Due '+x.date+' · '+(x.dials[today]||0)+' dials today');
+  let html='';
+  html+='<div style="font-size:11px;color:var(--text2);background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--radius);padding:7px 10px;margin-bottom:12px">One note for the whole day. Set the next follow-up date, or mark it completed if you got your answer.</div>';
+  const existing=String(d[rc.notes]||'');
+  if(existing.trim()){const lines=existing.trim().split('\n').slice(-3);html+='<div class="modal-notes-preview"><div class="mnp-label">Recent notes</div><div class="mnp-text">'+esc(lines.join('\n'))+'</div></div>';}
+  html+='<div class="form-group" style="margin-top:12px"><label>Today\'s note</label><textarea id="afu-note" rows="3" placeholder="What happened across your calls today?"></textarea></div>';
+  html+='<div class="form-grid">';
+  html+='<div class="form-group"><label>Who answered</label><select id="afu-who"><option value="NO CONTACT">NO CONTACT</option><option value="GK">GK</option><option value="EA">EA</option><option value="CEO">CEO</option><option value="CRA">CRA</option><option value="CFO">CFO</option></select></div>';
+  html+='<div class="form-group"><label>Outcome</label><select id="afu-outcome"><option>No Answer</option><option>Left Message</option><option>Check Back Later</option><option>Expressed Interest</option><option>Follow-up</option><option>Email requested/ Follow-up</option><option>Decline</option></select></div>';
+  html+='</div>';
+  html+='<div class="form-group"><label>Next follow-up date (M/D/YYYY) — leave blank if completed</label><input type="text" id="afu-next" placeholder="e.g. 7/15/2026"/></div>';
+  html+='<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="afu-done" style="width:15px;height:15px"/> ✓ Follow-up completed — got the response needed</label></div>';
+  html+='<div class="modal-actions"><button class="btn-primary" onclick="saveAFUModal()">Save day note</button><button class="btn-cancel" onclick="closeNumModal()">Cancel</button></div>';
+  el('nm-body').innerHTML=html;
+  el('num-modal').classList.remove('hidden');
+}
+function saveAFUModal(){
+  if(!afuCtx)return;
+  const {ri,role}=afuCtx;
+  const x=appFU[afuKey(ri,role)];if(!x)return;
+  const b=banks.find(z=>z.ri===ri),d=b.d,rc=RC[role];
+  const note=el('afu-note')?.value.trim()||'';
+  const who=el('afu-who')?.value||'NO CONTACT';
+  const outcome=el('afu-outcome')?.value||'No Answer';
+  const nextDate=el('afu-next')?.value.trim()||'';
+  const done=el('afu-done')?.checked||false;
+  if(!done&&!nextDate){toast('Set a next date or mark completed','error');return;}
+  if(nextDate&&!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(nextDate)){toast('Use M/D/YYYY format','error');return;}
+  const dateStr=workDateDisplay();
+  const existing=String(d[rc.notes]||'');
+  const before={recent:d[rc.recent]||'',times:String(parseInt(d[rc.times])||0),outcome:d[rc.outcome]||'',who:d[rc.who]||'',notes:existing};
+  // One dated note line for the day
+  let noteEntry='';
+  if(note){
+    noteEntry=existing.includes(dateStr)?note:(dateStr+'\n'+note);
+    d[rc.notes]=existing?existing+'\n'+noteEntry:noteEntry;
+  }
+  d[rc.recent]=dateStr;
+  d[rc.times]=String((parseInt(d[rc.times])||0)+1);
+  d[rc.outcome]=outcome;
+  d[rc.who]=who;
+  // Log entry so stats/report reflect the day
+  const logEntry={id:genId(),ri,role,who,outcome,noteEntry,noteText:note,notesTxt:note,spokeTo:'',newNum:'',phone:'',called:true,dialCount:0,date:workDate,before,deleted:false,afuNote:true};
+  const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(logEntry);saveLogs();
+  // Update follow-up schedule
+  if(done){x.done=true;}
+  else{x.date=nextDate;}
+  saveAFU();
+  writeSheet([
+    {row:ri,col:rc.notes,value:d[rc.notes]||''},
+    {row:ri,col:rc.recent,value:d[rc.recent]},
+    {row:ri,col:rc.times,value:d[rc.times]},
+    {row:ri,col:rc.outcome,value:d[rc.outcome]},
+    {row:ri,col:rc.who,value:d[rc.who]}
+  ]);
+  mirrorPriority(ri,role);
+  renderStats();closeNumModal();showCurrentBank();
+  toast(done?'Follow-up completed ✓':'Day note saved, next: '+nextDate,'success');
+}
+function dneKey(ri,role){return bankId(ri)+'__'+role;}
+function isDNE(ri,role){const x=dne[dneKey(ri,role)];return x&&!x.undone;}
+
+// Standalone compilation of ALL "lead does not exist" marks (not the daily report)
+function gCleanBank(s){return String(s||'').replace(/\u00a0/g,' ').trim().split(/\s+/).map(function(w){
+  if(w.length>2&&w===w.toUpperCase()&&/[A-Z]/.test(w)){var low=w.toLowerCase();if(['of','and','the'].includes(low))return low;return low.charAt(0).toUpperCase()+low.slice(1);}
+  return w;}).join(' ');}
+function gCleanIssue(s){return String(s||'').replace(/\s*\([^)]*\)/g,'').replace(/—/g,',').trim();}
+function showFlagReport(scope){
+  const _today=realToday();
+  const fmt10=(ph)=>{const dg=phoneDigits(ph);return dg.length===10?dg.slice(0,3)+'.'+dg.slice(3,6)+'.'+dg.slice(6):phoneBase(ph);};
+  // Gather lead flags + HQ flags
+  let items=[];
+  Object.values(flags).forEach(f=>{
+    if(f.undone||f.fromSheet)return;
+    if(scope==='today'&&f.dateReal!==_today)return;
+    items.push({ri:f.ri,role:f.role,phone:f.phone,issue:f.issue,date:f.dateReal||f.date||''});
+  });
+  Object.values(hqFlags).forEach(f=>{
+    if(f.undone)return;
+    if(scope==='today'&&f.dateReal!==_today)return;
+    items.push({ri:f.ri,role:'HQ',phone:f.phone,issue:f.issue,date:f.dateReal||f.date||''});
+  });
+  // Merge by bank+digits
+  const byBank={};
+  items.forEach(it=>{
+    if(!byBank[it.ri])byBank[it.ri]={};
+    const dg=(it.role==='HQ'?'HQ':'')+(phoneDigits(it.phone)||phoneBase(it.phone));
+    if(!byBank[it.ri][dg])byBank[it.ri][dg]={roles:[],issue:gCleanIssue(it.issue),display:fmt10(it.phone),date:it.date};
+    if(!byBank[it.ri][dg].roles.includes(it.role))byBank[it.ri][dg].roles.push(it.role);
+  });
+  let t=(scope==='today'?"Today's Flagged Numbers":"All Flagged Numbers (all-time)")+"\n";
+  const count=Object.values(byBank).reduce((a,o)=>a+Object.keys(o).length,0);
+  t+='Generated '+_today+' | '+count+' number'+(count===1?'':'s')+'\n\n';
+  if(!count){t+='None.';}
+  else{
+    Object.keys(byBank).map(Number).sort((a,b)=>a-b).forEach(ri=>{
+      const b=banks.find(x=>x.ri===ri);
+      const bankName=gCleanBank(b?b.d[C.BANK]:'');
+      Object.values(byBank[ri]).forEach(info=>{
+        t+='Row '+ri+' | '+bankName+' | '+info.roles.join(' & ')+' '+info.display+' | '+info.issue+(scope==='all'&&info.date?' | '+info.date:'')+'\n';
+      });
+    });
+  }
+  st('eod-title',scope==='today'?"Today's flags":'All flags ever');
+  st('eod-sub',scope==='today'?'Numbers you flagged today':'Every flagged number, all time');
+  el('eod-text').textContent=t.trim();
+  const dialsRow=el('eod-dials-row'); if(dialsRow)dialsRow.style.display='none';
+  el('eod-modal').classList.remove('hidden');
+}
+function showDNEReport(){
+  const list=Object.values(dne).filter(x=>!x.undone).sort((a,b)=>a.ri-b.ri);
+  let t='Leads Not In Bank System (all-time compilation)\n';
+  t+='Generated '+workDateDisplay()+' | '+list.length+' leads\n\n';
+  if(!list.length){t+='None recorded yet.';}
+  else{
+    list.forEach(x=>{
+      const b=banks.find(bb=>bb.ri===x.ri);
+      const bank=b?String(b.d[C.BANK]||''):'';
+      const nm=x.name?' | '+x.name:'';
+      const rsn=x.reason?' | '+x.reason:'';
+      t+='Row '+x.ri+' | '+bank+' | '+x.role+nm+rsn+'\n';
+    });
+  }
+  st('eod-title','Non-existent leads');st('eod-sub','All leads marked as not existing in the bank system');
+  el('eod-text').textContent=t;
+  el('eod-modal').classList.remove('hidden');
+}
+function toggleDNE(ri,role){
+  const k=dneKey(ri,role);
+  if(isDNE(ri,role)){dne[k].undone=true;toast('Lead restored','success');}
+  else{
+    const b=banks.find(x=>x.ri===ri);
+    dne[k]={ri,role,name:b?String(b.d[RC[role].name]||''):'',date:workDate,undone:false,inReport:false};
+    toast('Marked: lead does not exist (app only)','success');
+  }
+  saveDNE();showCurrentBank();
+}
+function toggleDNEReport(ri,role){
+  const k=dneKey(ri,role);
+  if(dne[k]){dne[k].inReport=!dne[k].inReport;saveDNE();showCurrentBank();
+    toast(dne[k].inReport?'Will show in report':'Removed from report','success');}
+}
+function hqKey(ri){return bankId(ri)+'__HQ';}
+function isHQFlagged(ri){const f=hqFlags[hqKey(ri)];return f&&!f.undone;}
+function isHQBlackbox(ri){return !!(hqMeta[hqKey(ri)]&&hqMeta[hqKey(ri)].blackbox);}
+
+function buildHQRow(ri,hqRaw){
+  const base=phoneBase(hqRaw);
+  const flagged=isHQFlagged(ri);
+  const meta=hqMeta[hqKey(ri)]||{};
+  const bb=isHQBlackbox(ri);
+  let cntLabel='';
+  if(bb&&meta.na)cntLabel=' · '+meta.na+'x no ans';
+  else if(!bb&&meta.at)cntLabel=' · '+meta.at+'x att';
+  const dialed=meta.dials?' · '+meta.dials+' dials':'';
+  let h='<div class="bank-hq-wrap">';
+  h+='<span class="bank-hq'+(flagged?' hq-flagged':'')+'" onclick="copyPhone(\''+esc(base)+'\',this)" title="Click to copy">🏢 HQ: '+esc(hqRaw)+(flagged?' ⚑':'')+cntLabel+dialed+'</span>';
+  h+='<button class="hq-btn hq-btn-flag" onclick="openHQModal('+ri+')" title="Log an HQ dial (app only)">📞 Dialed HQ</button>';
+  if(flagged){h+='<button class="hq-btn hq-btn-undo" onclick="hqUndoFlag('+ri+')">↩ Unflag</button>';}
+  h+='</div>';
+  return h;
+}
+
+let hqCtx=null;
+function openHQModal(ri){
+  hqCtx={ri};
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  const base=phoneBase(String(b.d[C.HQ]));
+  const bb=isHQBlackbox(ri);
+  st('nm-title',b.d[C.BANK]+' — HQ Number');
+  st('nm-sub','Row '+ri+' · '+base+' · App only, nothing goes to sheet or notes');
+  let html='';
+  html+='<div style="font-size:11px;color:var(--text2);background:var(--surface2);border:0.5px solid var(--border);border-radius:var(--radius);padding:7px 10px;margin-bottom:12px">This logs a dial on the HQ number. It counts toward your daily dials but never touches the sheet or notes.</div>';
+  html+='<div class="form-group"><label>Outcome</label><select id="hq-outcome"><option>No Answer</option><option>Reached</option></select></div>';
+  html+='<div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="hq-bb" '+(bb?'checked':'')+' style="width:15px;height:15px"/> Black box number (no identifier) — uses 2x rule instead of 7x</label></div>';
+  html+='<div class="num-section" style="margin-top:6px"><div style="padding:10px">';
+  html+='<div class="form-group" style="margin-bottom:0"><label>Flag this HQ number? (app only)</label><select id="hq-flag"><option value="">— number is fine</option>';
+  html+='<option value="2x no answer (black box)">2x no answer (black box)</option>';
+  html+='<option value="7x no answer (reached bank)">7x no answer (reached bank)</option>';
+  FLAG_OPTIONS.forEach(f=>{html+='<option>'+f+'</option>';});
+  html+='</select></div></div></div>';
+  html+='<div class="modal-actions" style="margin-top:14px"><button class="btn-primary" onclick="saveHQModal()">Save dial</button><button class="btn-cancel" onclick="closeNumModal()">Cancel</button></div>';
+  el('nm-body').innerHTML=html;
+  el('num-modal').classList.remove('hidden');
+}
+
+function saveHQModal(){
+  if(!hqCtx)return;
+  const {ri}=hqCtx;
+  const b=banks.find(x=>x.ri===ri);if(!b)return;
+  const base=phoneBase(String(b.d[C.HQ]));
+  const k=hqKey(ri);
+  const outcome=el('hq-outcome')?.value||'No Answer';
+  const bb=el('hq-bb')?.checked||false;
+  const flagIssue=el('hq-flag')?.value||'';
+
+  if(!hqMeta[k])hqMeta[k]={na:0,at:0,dials:0,blackbox:false};
+  hqMeta[k].blackbox=bb;
+  hqMeta[k].dials=(hqMeta[k].dials||0)+1; // counts as a dial
+
+  // 2x / 7x counters only climb on No Answer
+  if(outcome==='No Answer'){
+    if(bb)hqMeta[k].na=(hqMeta[k].na||0)+1;
+    else hqMeta[k].at=(hqMeta[k].at||0)+1;
+    // Auto-flag at threshold, app only
+    if(bb&&hqMeta[k].na>=2&&!isHQFlagged(ri)){
+      hqFlags[k]={ri,phone:base,issue:'2x no answer (black box)',undone:false,date:workDate,rule:'2x'};
+    }else if(!bb&&hqMeta[k].at>=7&&!isHQFlagged(ri)){
+      hqFlags[k]={ri,phone:base,issue:'7x no answer (reached bank)',undone:false,date:workDate,rule:'7x'};
+    }
+  }
+
+  // Manual flag choice overrides/sets
+  if(flagIssue){
+    const rule=flagIssue.startsWith('2x')?'2x':flagIssue.startsWith('7x')?'7x':undefined;
+    hqFlags[k]={ri,phone:base,issue:flagIssue,undone:false,date:workDate,rule};
+  }
+
+  saveHQMeta();saveHQFlags();
+  // Record a dial-only log so daily dials include it
+  const dlog={id:genId(),ri,role:'HQ',who:'NO CONTACT',outcome,called:true,dialCount:1,date:workDate,hqDial:true,deleted:false};
+  const key=logKey(ri);if(!logs[key])logs[key]=[];logs[key].push(dlog);saveLogs();
+
+  renderStats();closeNumModal();showCurrentBank();
+  toast(flagIssue||isHQFlagged(ri)?'HQ dial logged + flagged':'HQ dial logged','success');
+}
+
+function hqUndoFlag(ri){
+  const k=hqKey(ri);
+  if(hqFlags[k]){hqFlags[k].undone=true;saveHQFlags();showCurrentBank();toast('HQ flag removed','success');}
+}
+
+function saveCallMeta(){ls(CALLMETA_KEY,JSON.stringify(callMeta));}
+
+function el(id){return document.getElementById(id);}
+function gv(id){return el(id)?.value||'';}
+function sv(id,v){const e=el(id);if(e)e.value=v||'';}
+function st(id,v){const e=el(id);if(e)e.textContent=v;}
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function genId(){return Date.now().toString(36)+Math.random().toString(36).slice(2);}
+function show(id){['setup-screen','main-app'].forEach(s=>{const e=el(s);if(e)e.classList.toggle('hidden',s!==id);});}
+function fmtSheetDate(v){if(!v)return'';try{const d=new Date(v);return isNaN(d)?String(v):(d.getMonth()+1)+'/'+d.getDate()+'/'+d.getFullYear();}catch{return String(v);}}
+function toast(msg,type=''){const e=el('toast');e.textContent=msg;e.className='toast'+(type?' '+type:'');e.classList.remove('hidden');setTimeout(()=>e.classList.add('hidden'),2500);}
