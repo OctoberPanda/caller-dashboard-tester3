@@ -403,7 +403,7 @@ select option{background:var(--surface2);color:var(--text)}
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v60</span>
+      <span class="tester-badge">TESTER v61</span>
       <button class="btn-backup" onclick="exportBackup()" title="Download a backup of all your calls">⭳ Backup</button>
       <div class="date-wrap">
         <span class="date-label">Date</span>
@@ -2388,7 +2388,7 @@ async function undoFlag(ri,role,phone){
       if(notes!==String(b.d[rc.notes]||'')){
         b.d[rc.notes]=notes;
         await writeSheet([{row:ri,col:rc.notes,value:notes}]);
-        try{await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:rc.phone,phone})});}catch(e){}
+        try{const _r=await liveRowForBank(wantNameForRi(ri))||ri;await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:_r,col:rc.phone,phone})});}catch(e){}
       }
       renderStats();rebuildCard(ri,false);toast('Flag removed (was from the notes)','success');
       return;
@@ -2411,8 +2411,9 @@ async function undoFlag(ri,role,phone){
     b.d[rc.notes]=notes;
     await writeSheet([{row:ri,col:rc.notes,value:notes}]);
     try{
+      const _r=await liveRowForBank(wantNameForRi(ri))||ri;
       await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:rc.phone,phone:flags[fKey].phone||phone})});
+        body:JSON.stringify({type:'unstrikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:_r,col:rc.phone,phone:flags[fKey].phone||phone})});
     }catch(e){console.error('Unstrikethrough error',e);}
     await removeContactUpdate(ri,role,flags[fKey].phone||phone,b.d);
   }
@@ -2510,8 +2511,54 @@ async function detectSheetStrikethroughs(){
   }catch(e){console.error('Strikethrough detection error',e);}
 }
 
+// --- v61: name-safe write guard -------------------------------------------
+// The sheet can be reordered outside the app (e.g. a timezone-sorted copy is
+// pasted in). Row numbers captured when the app loaded then point at the WRONG
+// bank, so a write would stamp one bank's numbers/notes onto another. Before
+// every per-bank write we re-find the bank's CURRENT row by its NAME and write
+// there, so a re-sort can never send a write to the wrong bank again.
+let _nameRows={map:null,dups:null,ts:0};
+async function liveRowForBank(wantUpper){
+  if(!cfg.sheetId||!cfg.apiKey||!cfg.tab||!wantUpper)return null;
+  try{
+    const now=Date.now();
+    if(!_nameRows.map||now-_nameRows.ts>4000){
+      // Bank Name is column B (C.BANK=1). Pull just that column, cheaply.
+      const url=`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent("'"+cfg.tab+"'!B1:B6000")}?key=${cfg.apiKey}`;
+      const res=await fetch(url);const data=await res.json();
+      const map={},dups={};
+      (data.values||[]).forEach((row,i)=>{
+        const nm=String((row&&row[0])||'').replace(/ /g,' ').trim().toUpperCase();
+        if(!nm)return;
+        if(nm in map)dups[nm]=true; else map[nm]=i+1; // 1-based sheet row
+      });
+      _nameRows={map,dups,ts:now};
+    }
+    if(_nameRows.dups[wantUpper])return null; // duplicate name -> don't guess
+    return _nameRows.map[wantUpper]||null;
+  }catch(e){console.error('liveRowForBank',e);return null;}
+}
+function wantNameForRi(ri){
+  const b=banks.find(x=>x.ri===ri);
+  return b?String(b.d[C.BANK]||'').replace(/ /g,' ').trim().toUpperCase():null;
+}
 async function writeSheet(updates){
   try{
+    // Re-resolve the target row by bank name (guards against an external re-sort)
+    const rowSet=[...new Set((updates||[]).map(u=>u.row))];
+    if(rowSet.length===1){
+      const ri=rowSet[0], want=wantNameForRi(ri);
+      if(want){
+        const real=await liveRowForBank(want);
+        if(real&&real!==ri){
+          updates=updates.map(u=>Object.assign({},u,{row:real}));
+          // sheet order drifted since load -> resync the whole app so the UI
+          // and all future writes line up with the live sheet again
+          _nameRows.ts=0;
+          setTimeout(()=>{try{loadSheet();}catch(e){}},50);
+        }
+      }
+    }
     const ctrl=new AbortController();
     const t=setTimeout(()=>ctrl.abort(),8000); // never hang more than 8s
     await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({sheetId:cfg.sheetId,tabName:cfg.tab,updates}),signal:ctrl.signal});
@@ -2521,7 +2568,11 @@ async function writeSheet(updates){
 }
 async function strikethrough(ri,phoneColIndex,badPhone){
   if(!badPhone)return;
-  try{await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'strikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row:ri,col:phoneColIndex,badNumber:badPhone})});}
+  try{
+    let row=ri;const want=wantNameForRi(ri);
+    if(want){const real=await liveRowForBank(want);if(real)row=real;}
+    await fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'strikethrough',sheetId:cfg.sheetId,tabName:cfg.tab,row,col:phoneColIndex,badNumber:badPhone})});
+  }
   catch(e){console.error('Strikethrough error',e);}
 }
 
