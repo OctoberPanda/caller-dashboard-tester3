@@ -403,7 +403,7 @@ select option{background:var(--surface2);color:var(--text)}
   <div class="topbar">
     <div class="topbar-left">
       <span class="app-name">📞 Caller Dashboard</span>
-      <span class="tester-badge">TESTER v61</span>
+      <span class="tester-badge">TESTER v63</span>
       <button class="btn-backup" onclick="exportBackup()" title="Download a backup of all your calls">⭳ Backup</button>
       <div class="date-wrap">
         <span class="date-label">Date</span>
@@ -797,12 +797,19 @@ function openFollowupModal(fri){
   el('num-modal').classList.remove('hidden');
 }
 
-function saveFollowup(){
+async function saveFollowup(){
   if(!fuCtx)return;
   const f=followups.find(x=>x.fri===fuCtx.fri);if(!f)return;
   const d=f.d;
   const note=el('fu-note')?.value.trim()||'';
   const dateStr=workDateDisplay();
+  // name-safe: find THIS bank's current row in the Follow-Up tab before writing
+  const fuName=String(d[FU.BANK]||'').replace(/ /g,' ').trim().toUpperCase();
+  const realRow=await liveFollowupRowForBank(fuName);
+  if(!realRow){
+    toast('This follow-up row is no longer on the sheet (it may have been deleted). Nothing written.','error');
+    await loadFollowups();buildFuByBank();closeNumModal();renderFollowups();return;
+  }
   // Update date, +1 times, add one dated note line
   d[FU.FOLLOWUP]=dateStr;
   d[FU.TIMES]=String((parseInt(d[FU.TIMES])||0)+1);
@@ -811,12 +818,12 @@ function saveFollowup(){
     const entry=dateStr+': '+note;
     d[FU.NOTES]=existing?existing+'\n'+entry:entry;
   }
-  // Write back to Follow-Up tab
+  // Write back to Follow-Up tab (to the row we just confirmed by name)
   const fuTab=cfg.followupTab||'Follow-Up Sheet';
   const updates=[
-    {row:f.fri,col:FU.FOLLOWUP,value:d[FU.FOLLOWUP]},
-    {row:f.fri,col:FU.TIMES,value:d[FU.TIMES]},
-    {row:f.fri,col:FU.NOTES,value:d[FU.NOTES]||''}
+    {row:realRow,col:FU.FOLLOWUP,value:d[FU.FOLLOWUP]},
+    {row:realRow,col:FU.TIMES,value:d[FU.TIMES]},
+    {row:realRow,col:FU.NOTES,value:d[FU.NOTES]||''}
   ];
   fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({sheetId:cfg.sheetId,tabName:fuTab,updates})}).catch(e=>console.error(e));
@@ -2060,18 +2067,24 @@ async function saveLeadLog(){
     const fuDate=el('ll-fu-date')?.value.trim()||'';
     if(fuDate&&!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(fuDate)){toast('Follow-up date must be M/D/YYYY','error');return;}
     const existingFU=fuByBank[bankId(ri)];
-    if(existingFU){
-      // Update existing follow-up row
+    const fuName=existingFU?String(existingFU.f.d[FU.BANK]||'').replace(/ /g,' ').trim().toUpperCase():null;
+    const fuRealRow=existingFU?await liveFollowupRowForBank(fuName):null;
+    if(existingFU&&fuRealRow){
+      // Update existing follow-up row (row confirmed by name, not position)
       const f=existingFU.f,fd=f.d;
       fd[FU.FOLLOWUP]=fuDate||dateStr;
       fd[FU.TIMES]=String((parseInt(fd[FU.TIMES])||0)+1);
       if(noteTxt){const ex=String(fd[FU.NOTES]||'');fd[FU.NOTES]=ex?ex+'\n'+dateStr+': '+noteTxt:dateStr+': '+noteTxt;}
       fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({sheetId:cfg.sheetId,tabName:fuTab,updates:[
-          {row:f.fri,col:FU.FOLLOWUP,value:fd[FU.FOLLOWUP]},
-          {row:f.fri,col:FU.TIMES,value:fd[FU.TIMES]},
-          {row:f.fri,col:FU.NOTES,value:fd[FU.NOTES]||''}
+          {row:fuRealRow,col:FU.FOLLOWUP,value:fd[FU.FOLLOWUP]},
+          {row:fuRealRow,col:FU.TIMES,value:fd[FU.TIMES]},
+          {row:fuRealRow,col:FU.NOTES,value:fd[FU.NOTES]||''}
         ]})}).catch(e=>console.error(e));
+    }else if(existingFU&&!fuRealRow){
+      // The app thinks this bank has a follow-up row, but it is no longer on the
+      // Follow-Up tab (e.g. you deleted it). Do NOT write to a guessed row.
+      toast('Follow-up row for this bank was removed from the sheet — skipped the follow-up update so nothing lands on the wrong row.','error');
     }else{
       // Create a NEW follow-up row: Bank + Person + Contact + Follow-up date + Rep
       const person=el('ll-fu-person')?.value.trim()||String(d[rc.name]||'');
@@ -2517,14 +2530,49 @@ async function detectSheetStrikethroughs(){
 // bank, so a write would stamp one bank's numbers/notes onto another. Before
 // every per-bank write we re-find the bank's CURRENT row by its NAME and write
 // there, so a re-sort can never send a write to the wrong bank again.
-let _nameRows={map:null,dups:null,ts:0};
-async function liveRowForBank(wantUpper){
-  if(!cfg.sheetId||!cfg.apiKey||!cfg.tab||!wantUpper)return null;
+let _nameRows={map:null,dups:null,ts:0,ok:false};
+async function refreshNameRows(){
+  const now=Date.now();
+  if(_nameRows.map&&now-_nameRows.ts<=4000)return;
+  try{
+    const url=`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent("'"+cfg.tab+"'!B1:B6000")}?key=${cfg.apiKey}`;
+    const res=await fetch(url);const data=await res.json();
+    if(data&&data.error){_nameRows={map:null,dups:null,ts:now,ok:false};return;}
+    const map={},dups={};
+    (data.values||[]).forEach((row,i)=>{
+      const nm=String((row&&row[0])||'').replace(/\u00a0/g,' ').trim().toUpperCase();
+      if(!nm)return;
+      if(nm in map)dups[nm]=true; else map[nm]=i+1;
+    });
+    _nameRows={map,dups,ts:now,ok:true};
+  }catch(e){console.error('refreshNameRows',e);_nameRows={map:null,dups:null,ts:Date.now(),ok:false};}
+}
+// {status:'ok',row} | {status:'dup'} | {status:'absent'} | {status:'error'}
+// 'absent' = column loaded fine but this bank is NOT on it (row deleted) -> SKIP the write.
+async function resolveMainRow(wantUpper){
+  if(!cfg.sheetId||!cfg.apiKey||!cfg.tab||!wantUpper)return {status:'error'};
+  await refreshNameRows();
+  if(!_nameRows.ok)return {status:'error'};
+  if(_nameRows.dups[wantUpper])return {status:'dup'};
+  const r=_nameRows.map[wantUpper];
+  return r?{status:'ok',row:r}:{status:'absent'};
+}
+async function liveRowForBank(wantUpper){const x=await resolveMainRow(wantUpper);return x.status==='ok'?x.row:null;}
+function wantNameForRi(ri){
+  const b=banks.find(x=>x.ri===ri);
+  return b?String(b.d[C.BANK]||'').replace(/ /g,' ').trim().toUpperCase():null;
+}
+// v62: name-safe row lookup for the Follow-Up tab. Deleting or adding a row
+// there shifts every row below it, so we re-find the bank by NAME (column A)
+// right before writing, instead of trusting the row number captured at load.
+let _fuNameRows={map:null,dups:null,ts:0};
+async function liveFollowupRowForBank(wantUpper){
+  const fuTab=cfg.followupTab||'Follow-Up Sheet';
+  if(!cfg.sheetId||!cfg.apiKey||!fuTab||!wantUpper)return null;
   try{
     const now=Date.now();
-    if(!_nameRows.map||now-_nameRows.ts>4000){
-      // Bank Name is column B (C.BANK=1). Pull just that column, cheaply.
-      const url=`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent("'"+cfg.tab+"'!B1:B6000")}?key=${cfg.apiKey}`;
+    if(!_fuNameRows.map||now-_fuNameRows.ts>4000){
+      const url=`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent("'"+fuTab+"'!A1:A6000")}?key=${cfg.apiKey}`;
       const res=await fetch(url);const data=await res.json();
       const map={},dups={};
       (data.values||[]).forEach((row,i)=>{
@@ -2532,31 +2580,33 @@ async function liveRowForBank(wantUpper){
         if(!nm)return;
         if(nm in map)dups[nm]=true; else map[nm]=i+1; // 1-based sheet row
       });
-      _nameRows={map,dups,ts:now};
+      _fuNameRows={map,dups,ts:now};
     }
-    if(_nameRows.dups[wantUpper])return null; // duplicate name -> don't guess
-    return _nameRows.map[wantUpper]||null;
-  }catch(e){console.error('liveRowForBank',e);return null;}
-}
-function wantNameForRi(ri){
-  const b=banks.find(x=>x.ri===ri);
-  return b?String(b.d[C.BANK]||'').replace(/ /g,' ').trim().toUpperCase():null;
+    if(_fuNameRows.dups[wantUpper])return null; // duplicate name -> don't guess
+    return _fuNameRows.map[wantUpper]||null;
+  }catch(e){console.error('liveFollowupRowForBank',e);return null;}
 }
 async function writeSheet(updates){
   try{
-    // Re-resolve the target row by bank name (guards against an external re-sort)
+    // Re-resolve the target row by bank name (guards against an external re-sort
+    // or a deleted row) before writing anything.
     const rowSet=[...new Set((updates||[]).map(u=>u.row))];
     if(rowSet.length===1){
       const ri=rowSet[0], want=wantNameForRi(ri);
       if(want){
-        const real=await liveRowForBank(want);
-        if(real&&real!==ri){
-          updates=updates.map(u=>Object.assign({},u,{row:real}));
-          // sheet order drifted since load -> resync the whole app so the UI
-          // and all future writes line up with the live sheet again
-          _nameRows.ts=0;
-          setTimeout(()=>{try{loadSheet();}catch(e){}},50);
+        const r=await resolveMainRow(want);
+        if(r.status==='absent'){
+          const b=banks.find(x=>x.ri===ri);const nm=b?String(b.d[C.BANK]||'').trim():want;
+          toast('"'+nm+'" is no longer on the main sheet (it looks deleted), so nothing was written. Refreshing.','error');
+          _nameRows.ts=0; setTimeout(()=>{try{loadSheet();}catch(e){}},50);
+          return; // never write to a guessed row
         }
+        if(r.status==='ok'&&r.row!==ri){
+          updates=updates.map(u=>Object.assign({},u,{row:r.row}));
+          // sheet order drifted since load -> resync so UI + future writes realign
+          _nameRows.ts=0; setTimeout(()=>{try{loadSheet();}catch(e){}},50);
+        }
+        // 'dup' or 'error' -> write to ri as a best effort (don't drop the log)
       }
     }
     const ctrl=new AbortController();
@@ -3243,16 +3293,42 @@ function buildPriByBank(){
 }
 function isPriorityBank(ri){return !!priByBank[bankId(ri)];}
 // Mirror a lead's recent-call date + notes from the main sheet into the Priority tab
-function mirrorPriority(ri,role){
+// v63: name-safe row lookup for the Priority tab (bank name in column B, PRI.BANK=1)
+let _priNameRows={map:null,dups:null,ts:0};
+async function resolvePriorityRow(wantUpper){
+  const pTab=cfg.priorityTab||'Priority Banks';
+  if(!cfg.sheetId||!cfg.apiKey||!pTab||!wantUpper)return null;
+  try{
+    const now=Date.now();
+    if(!_priNameRows.map||now-_priNameRows.ts>4000){
+      const url=`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent("'"+pTab+"'!B1:B6000")}?key=${cfg.apiKey}`;
+      const res=await fetch(url);const data=await res.json();
+      const map={},dups={};
+      (data.values||[]).forEach((row,i)=>{
+        const nm=String((row&&row[0])||'').replace(/\u00a0/g,' ').trim().toUpperCase();
+        if(!nm)return;
+        if(nm in map)dups[nm]=true; else map[nm]=i+1;
+      });
+      _priNameRows={map,dups,ts:now};
+    }
+    if(_priNameRows.dups[wantUpper])return null;
+    return _priNameRows.map[wantUpper]||null;
+  }catch(e){console.error('resolvePriorityRow',e);return null;}
+}
+async function mirrorPriority(ri,role){
   const p=priByBank[bankId(ri)];if(!p)return;
   const pc=PRI[role];if(!pc)return;
   const b=banks.find(x=>x.ri===ri);if(!b)return;
   const rc=RC[role];
   const pTab=cfg.priorityTab||'Priority Banks';
+  // find THIS bank's current row on the Priority tab by name; skip if it moved/was removed
+  const priName=String(p.d[PRI.BANK]||'').replace(/\u00a0/g,' ').trim().toUpperCase();
+  const realRow=await resolvePriorityRow(priName);
+  if(!realRow)return;
   fetch(SCRIPT_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({sheetId:cfg.sheetId,tabName:pTab,updates:[
-      {row:p.pri,col:pc.recent,value:b.d[rc.recent]||''},
-      {row:p.pri,col:pc.notes,value:b.d[rc.notes]||''}
+      {row:realRow,col:pc.recent,value:b.d[rc.recent]||''},
+      {row:realRow,col:pc.notes,value:b.d[rc.notes]||''}
     ]})}).catch(e=>console.error('Priority mirror failed',e));
 }
 
